@@ -135,15 +135,65 @@ async def terminate_agent(agent_id: int):
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
     process = agent_info["process"]
-    process.terminate()
+    port = agent_info["port"]
+    
+    # Try graceful shutdown first
     try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(f"http://localhost:{port}/shutdown")
+            await asyncio.sleep(1)
+    except Exception:
+        pass
+    
+    # Force terminate if still running
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
     
     del spawned_agents[agent_id]
     
     return {"message": f"Agent {agent_id} terminated"}
+
+
+class ShutdownRequest(BaseModel):
+    """Request to shutdown agent by port"""
+    port: int
+
+
+@app.post("/shutdown_agent")
+async def shutdown_agent_by_port(request: ShutdownRequest):
+    """
+    Shutdown agent by port number.
+    Called by host when a player dies.
+    """
+    for agent_id, agent_info in spawned_agents.items():
+        if agent_info["port"] == request.port:
+            process = agent_info["process"]
+            
+            # Try graceful shutdown first
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(f"http://localhost:{request.port}/shutdown")
+                    await asyncio.sleep(1)
+            except Exception:
+                pass
+            
+            # Force terminate if still running
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            
+            del spawned_agents[agent_id]
+            print(f"[Lobby] Agent #{agent_id} (port {request.port}) shutdown successfully")
+            return {"message": f"Agent on port {request.port} terminated"}
+    
+    raise HTTPException(status_code=404, detail=f"No agent found on port {request.port}")
 
 
 if __name__ == "__main__":

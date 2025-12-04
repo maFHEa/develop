@@ -17,10 +17,12 @@ class InitRequest(BaseModel):
 
 class GameUpdateRequest(BaseModel):
     """Update agent with current game state"""
-    phase: str  # "night", "day", "vote"
+    phase: str  # "night", "day", "vote", "day_start"
     message: str
     survivors: List[int]
     dead_players: List[int]
+    recently_killed: List[int] = []  # 방금 죽은 플레이어들
+    recently_voted_out: int = -1  # 방금 투표로 나간 플레이어
 
 
 class ChatPhaseRequest(BaseModel):

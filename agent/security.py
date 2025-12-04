@@ -155,28 +155,36 @@ def multiply_encrypted_vectors(vec1: ts.BFVVector, vec2: ts.BFVVector) -> ts.BFV
 def compute_killed_vector(
     attack_vector: ts.BFVVector,
     heal_vector: ts.BFVVector,
-    context: ts.Context
+    context: ts.Context,
+    num_players: int
 ) -> ts.BFVVector:
     """
     Compute who is killed: Attack AND NOT Healed.
     
     Formula: Killed = Attack * (1 - Heal)
     
+    In detail:
+    - If attack[i] = 1 and heal[i] = 1: killed[i] = 1 * (1-1) = 0 (saved)
+    - If attack[i] = 1 and heal[i] = 0: killed[i] = 1 * (1-0) = 1 (killed)
+    - If attack[i] = 0: killed[i] = 0 (not attacked)
+    
     Args:
         attack_vector: Aggregated encrypted attack vector
         heal_vector: Aggregated encrypted heal vector
         context: TenSEAL context
+        num_players: Number of players (vector size)
         
     Returns:
         Encrypted kill result vector
     """
-    # Create vector of ones
-    ones = ts.bfv_vector(context, [1] * len(heal_vector.decrypt()))
+    # Create vector of ones (without decrypting anything)
+    ones = ts.bfv_vector(context, [1] * num_players)
     
-    # Compute 1 - heal
+    # Compute 1 - heal (if healed, result is 0; if not healed, result is 1)
     not_healed = ones - heal_vector
     
     # Attack * (1 - Heal)
+    # Only killed if attacked AND not healed
     killed = multiply_encrypted_vectors(attack_vector, not_healed)
     
     return killed
