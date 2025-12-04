@@ -7,6 +7,7 @@ from typing import List
 
 class InitRequest(BaseModel):
     """Initialize agent with game parameters"""
+    game_id: str  # Short UUID to identify game session
     public_context: str
     role: str
     player_index: int

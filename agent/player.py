@@ -7,14 +7,16 @@ import json
 import os
 import sys
 import logging
-from typing import Optional, List, Dict, Any, Annotated
+from typing import Optional, List
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
 import uvicorn
-import asyncio
 import tenseal as ts
 
-from agents import Agent, Runner, function_tool, ToolCallItem, ToolCallOutputItem, MessageOutputItem, ItemHelpers
+from agents import Agent, Runner, ToolCallItem, ToolCallOutputItem, MessageOutputItem, ItemHelpers, SQLiteSession
+
+from chat import GameChatHistory, ChatMessage
+from suspicion import SuspicionNoteManager, PoliceNoteManager
+from agent_logic import create_mafia_agent, create_action_prompt
 
 from models import (
     InitRequest,
@@ -35,62 +37,9 @@ from security import (
 
 logger = logging.getLogger(__name__)
 
-class ChatMessage:
-    """Single chat message with metadata"""
-    def __init__(self, player_index: int, phase: str, message: str, turn: int, msg_id: int):
-        self.player_index = player_index
-        self.phase = phase
-        self.message = message
-        self.turn = turn
-        self.msg_id = msg_id
-        self.timestamp = asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "msg_id": self.msg_id,
-            "player": self.player_index,
-            "phase": self.phase,
-            "message": self.message,
-            "turn": self.turn,
-            "timestamp": self.timestamp
-        }
-
-
-class GameChatHistory:
-    """Stores P2P chat messages throughout the game session in memory"""
-    def __init__(self):
-        self.messages: List[ChatMessage] = []
-        self.next_id: int = 0
-    
-    def add_message(self, player_index: int, phase: str, message: str, turn: int) -> int:
-        msg = ChatMessage(player_index, phase, message, turn, self.next_id)
-        self.messages.append(msg)
-        self.next_id += 1
-        return msg.msg_id
-    
-    def get_messages_from(self, from_id: int = 0, limit: Optional[int] = None) -> List[ChatMessage]:
-        filtered = [m for m in self.messages if m.msg_id >= from_id]
-        if limit:
-            return filtered[:limit]
-        return filtered
-
-class SessionMemory:
-    """In-memory conversation history for the agent during a game session"""
-    def __init__(self):
-        self.conversation: List[Dict[str, str]] = []
-    
-    def add_turn(self, user_input: str, assistant_output: str):
-        self.conversation.append({"role": "user", "content": user_input})
-        self.conversation.append({"role": "assistant", "content": assistant_output})
-    
-    def get_messages(self) -> List[Dict[str, str]]:
-        return self.conversation.copy()
-    
-    def clear(self):
-        self.conversation.clear()
-
 class AgentState:
     def __init__(self):
+        self.game_id: Optional[str] = None  # Short UUID for game session
         self.agent_id: Optional[int] = None
         self.context: Optional[ts.Context] = None
         self.role: Optional[str] = None
@@ -101,7 +50,8 @@ class AgentState:
         self.current_phase: str = "setup"
         self.current_turn: int = 0
         self.chat_history: GameChatHistory = GameChatHistory()
-        self.session_memory: SessionMemory = SessionMemory()
+        self.suspicion_notes: Optional[SuspicionNoteManager] = None
+        self.session: Optional[SQLiteSession] = None
         self.last_read_msg_id: int = -1
         self.pending_action_target: Optional[int] = None
         self.action_submitted: bool = False
@@ -112,89 +62,6 @@ app = FastAPI(title="Mafia AI Agent")
 
 
 # ============================================================================
-# Agent Function Tools
-# ============================================================================
-
-@function_tool
-def submit_night_action(
-    target_index: Annotated[int, "Index of player to target (0-indexed). Use -1 to abstain."]
-) -> str:
-    """
-    REQUIRED for night phase if you have a night role (Mafia/Doctor/Police).
-    - Mafia: Choose a player to kill.
-    - Doctor: Choose a player to save.
-    - Police: Choose a player to investigate.
-    """
-    if state.action_submitted:
-        return "You have already submitted an action for this phase."
-    
-    action_type = state.role if state.role in ["mafia", "doctor", "police"] else "NONE"
-    
-    if action_type != "NONE":
-        if 0 <= target_index < state.num_players and target_index != state.player_index:
-            state.pending_action_target = target_index
-            state.action_submitted = True
-            logger.info(f"[ACTION] AI decided to perform {action_type.upper()} on Player {target_index}")
-            return f"Night action submitted: targeting Player {target_index}"
-        else:
-            state.pending_action_target = None
-            state.action_submitted = True
-            logger.info(f"[ACTION] AI decided to ABSTAIN from night action.")
-            return "Invalid target or abstained. No action will be taken."
-    else: # Citizen
-        state.pending_action_target = None
-        state.action_submitted = True
-        logger.info(f"[ACTION] AI is a Citizen, sending dummy action.")
-        return "You have no night action (Citizen). Dummy data will be sent for security."
-
-@function_tool
-def submit_vote(
-    target_index: Annotated[int, "Index of player to vote for elimination (0-indexed). Use -1 to abstain."]
-) -> str:
-    """REQUIRED for vote phase. Cast your vote to eliminate a player."""
-    if state.action_submitted:
-        return "You have already submitted a vote for this phase."
-    
-    if 0 <= target_index < state.num_players and target_index != state.player_index:
-        state.pending_action_target = target_index
-        state.action_submitted = True
-        logger.info(f"[ACTION] AI decided to VOTE for Player {target_index}")
-        return f"Vote submitted: voting to eliminate Player {target_index}"
-    else:
-        state.pending_action_target = None
-        state.action_submitted = True
-        logger.info(f"[ACTION] AI decided to ABSTAIN from voting.")
-        return "Invalid vote target or abstained. You will abstain from voting."
-
-
-# ============================================================================
-# Agent Creation
-# ============================================================================
-
-def create_mafia_agent(role: str, player_index: int, num_players: int) -> Agent:
-    """Create an OpenAI Agent with role-specific instructions."""
-    
-    role_instructions = {
-        "mafia": f"You are Player {player_index}, a MAFIA member. Your goal is to eliminate citizens. Use submit_night_action() to kill someone.",
-        "doctor": f"You are Player {player_index}, a DOCTOR. Your goal is to save citizens. Use submit_night_action() to save someone.",
-        "police": f"You are Player {player_index}, a POLICE officer. Your goal is to find mafia. Use submit_night_action() to investigate someone.",
-        "citizen": f"You are Player {player_index}, a CITIZEN. Your goal is to vote out mafia. You have no night action (call submit_night_action(-1))."
-    }
-    instructions = (
-        f"You are playing a game of Mafia. Your player index is {player_index}. There are {num_players} players total.\n"
-        f"{role_instructions.get(role, role_instructions['citizen'])}\n"
-        "During the day, you can chat with other players (not yet implemented).\n"
-        "You MUST call submit_night_action() during the night phase and submit_vote() during the vote phase before responding."
-    )
-    
-    return Agent(
-        name=f"MafiaPlayer{player_index}",
-        instructions=instructions,
-        tools=[submit_night_action, submit_vote],
-        model="gpt-4o",
-    )
-
-# ============================================================================
 # API Endpoints
 # ============================================================================
 
@@ -202,24 +69,35 @@ def create_mafia_agent(role: str, player_index: int, num_players: int) -> Agent:
 async def initialize_agent(request: InitRequest):
     """Initialize agent with game parameters and role."""
     try:
+        state.game_id = request.game_id
         state.context = deserialize_context(request.public_context)
         state.role = request.role.lower()
         state.player_index = request.player_index
         state.num_players = request.num_players
         state.alive = True
-        state.session_memory.clear()
-        state.last_read_msg_id = -1
-        state.agent = create_mafia_agent(state.role, state.player_index, state.num_players)
         
-        logger.info("="*50)
-        logger.info(f"AGENT INITIALIZED")
-        logger.info(f"  - Player Index: {state.player_index}")
-        logger.info(f"  - Role: {state.role.upper()}")
-        logger.info("="*50)
+        # Initialize suspicion notes manager (Police gets special version)
+        if state.role == "police":
+            state.suspicion_notes = PoliceNoteManager(state.num_players, state.player_index)
+        else:
+            state.suspicion_notes = SuspicionNoteManager(state.num_players, state.player_index)
+        
+        # SQLiteSession으로 게임별, 에이전트별 대화 히스토리 관리
+        # game_id와 agent_id로 구분 - 하나의 DB에 모든 게임/에이전트 데이터 저장
+        session_id = f"game_{state.game_id}_agent_{state.agent_id}_player_{state.player_index}"
+        db_path = "conversations.db"  # 하나의 DB 파일 사용
+        state.session = SQLiteSession(session_id, db_path)
+        await state.session.clear_session()  # 새 게임 시작 시 이전 대화 초기화
+        state.last_read_msg_id = -1
+        state.agent = create_mafia_agent(state, state.role, state.player_index, state.num_players)
+        
+        logger.info("━" * 60)
+        logger.info(f"🎮 INITIALIZED | Player #{state.player_index} | Role: {state.role.upper()}")
+        logger.info("━" * 60)
         
         return {"success": True, "message": f"Agent initialized as {state.role}"}
     except Exception as e:
-        logger.error(f"Error in /init: {e}", exc_info=True)
+        logger.error(f"❌ Init error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/request_action", response_model=ActionResponse)
@@ -234,12 +112,21 @@ async def request_action(request: GameUpdateRequest):
 
         # Log phase start
         survivors_str = ", ".join(str(s) for s in request.survivors)
-        logger.info("-" * 50)
-        logger.info(f"PHASE START: {request.phase.upper()} (Turn {state.current_turn})")
-        logger.info(f"SURVIVORS: [{survivors_str}]")
+        logger.info("")
+        logger.info("━" * 60)
+        logger.info(f"📍 {request.phase.upper()} PHASE | Turn {state.current_turn}")
+        logger.info(f"👥 Alive: {survivors_str}")
+        logger.info(f"💬 Message: {request.message}")
+        logger.info("━" * 60)
+        
+        # Update dead players in suspicion notes
+        if state.suspicion_notes:
+            for i in range(state.num_players):
+                if i not in request.survivors and i != state.player_index:
+                    state.suspicion_notes.mark_player_dead(i)
 
         if not state.alive:
-            logger.info("Agent is dead. Sending dummy zero vector.")
+            logger.info("💀 Agent is dead. Sending dummy action.")
             encrypted_vector = create_zero_vector(state.num_players, state.context)
             return ActionResponse(encrypted_action=serialize_encrypted_vector(encrypted_vector), phase=request.phase)
 
@@ -247,84 +134,68 @@ async def request_action(request: GameUpdateRequest):
             if request.phase == "night":
                 state.current_turn += 1
             
-            prompt = f"""Current Phase: {request.phase.upper()} - Turn {state.current_turn}
-Survivors: [{survivors_str}]
-Your Role: {state.role.upper()}
-Host Message: '{request.message}'
-
-Your task is to analyze the situation and decide on your action.
-You MUST call the required function (submit_night_action or submit_vote) before finishing.
-Think step-by-step about your strategy and then make your call."""
+            prompt = create_action_prompt(
+                phase=request.phase,
+                turn=state.current_turn,
+                survivors_str=survivors_str,
+                role=state.role,
+                message=request.message
+            )
             
-            logger.info(f"TASK: Prompting AI.\n---PROMPT START---\n{prompt}\n---PROMPT END---")
+            logger.debug(f"AI Prompt:\n{prompt}")
 
-            messages = state.session_memory.get_messages()
-            messages.append({"role": "user", "content": prompt})
-
+            logger.info("🤖 Calling AI agent...")
             result = await Runner.run(
                 starting_agent=state.agent,
-                input=messages,
+                input=prompt,
+                session=state.session,  # 자동으로 이전 대화 불러오고 저장
                 max_turns=5 
             )
 
-            # Log AI interaction with detailed information
-            logger.info("=" * 60)
-            logger.info("AI EXECUTION SUMMARY")
-            logger.info("=" * 60)
-            logger.info(f"Total items generated: {len(result.new_items)}")
+            # Log AI interaction - 깔끔하게 정리
             logger.info("")
+            logger.info("┌─ AI Decision ─────────────────────────────────────────────┐")
             
-            for idx, item in enumerate(result.new_items, 1):
-                logger.info(f"--- Item {idx}/{len(result.new_items)} ---")
-                
+            for item in result.new_items:
                 if isinstance(item, ToolCallItem):
                     # Function call by AI
                     func_name = getattr(item.raw_item, 'name', 'unknown')
                     func_args = getattr(item.raw_item, 'arguments', '{}')
-                    logger.info(f"[FUNCTION CALL]")
-                    logger.info(f"  Function: {func_name}")
-                    logger.info(f"  Arguments: {func_args}")
+                    try:
+                        args_dict = json.loads(func_args)
+                        logger.info(f"│ 🔧 Function: {func_name}")
+                        logger.info(f"│    Args: {args_dict}")
+                    except:
+                        logger.info(f"│ 🔧 Function: {func_name}({func_args})")
                     
                 elif isinstance(item, ToolCallOutputItem):
                     # Function execution result
-                    logger.info(f"[FUNCTION RESULT]")
-                    logger.info(f"  Output: {item.output}")
+                    logger.info(f"│ ✅ Result: {item.output}")
                     
                 elif isinstance(item, MessageOutputItem):
                     # AI's message/thought
                     message_text = ItemHelpers.text_message_output(item)
-                    logger.info(f"[AI MESSAGE]")
-                    logger.info(f"  Content: {message_text}")
-                    
-                else:
-                    # Other types
-                    item_type = type(item).__name__
-                    logger.info(f"[OTHER: {item_type}]")
-                    if hasattr(item, 'raw_item'):
-                        raw_type = getattr(item.raw_item, 'type', 'unknown')
-                        logger.info(f"  Raw type: {raw_type}")
-                
-                logger.info("")
+                    if message_text.strip():
+                        logger.info(f"│ 💭 Thought: {message_text[:100]}...")
             
-            logger.info(f"[FINAL OUTPUT] {result.final_output}")
-            logger.info("=" * 60)
-
-            state.session_memory.add_turn(prompt, str(result.final_output))
+            logger.info("└───────────────────────────────────────────────────────────┘")
+            logger.debug(f"Full AI output: {result.final_output}")
+            # Session이 자동으로 대화 저장하므로 add_turn 불필요
 
             if not state.action_submitted:
-                logger.warning("AI did not submit an action, defaulting to abstain.")
+                logger.warning("⚠️  AI did not submit an action, defaulting to abstain.")
                 state.pending_action_target = None
         else:
-            logger.info("No action required for this phase.")
+            logger.info("ℹ️  No action required for this phase.")
             state.pending_action_target = None
         
         # Encrypt final action
         if state.pending_action_target is not None:
             encrypted_vector = create_one_hot_vector(state.num_players, state.pending_action_target, state.context)
-            logger.info(f"Submitting ENCRYPTED action for target: {state.pending_action_target}")
+            logger.info(f"🔒 Encrypted action → Target Player {state.pending_action_target}")
         else:
             encrypted_vector = create_zero_vector(state.num_players, state.context)
-            logger.info("Submitting ENCRYPTED dummy/abstain action.")
+            logger.info("🔒 Encrypted dummy action (abstain/no-op)")
         
         return ActionResponse(
             encrypted_action=serialize_encrypted_vector(encrypted_vector),
@@ -349,48 +220,63 @@ def setup_logging(port: int):
     if not os.path.exists(logs_dir):
         os.makedirs(logs_dir)
     
-    log_file_path = os.path.join(logs_dir, f"agent_{port}.log")
+    # 2개의 로그 파일: agent.log (게임 진행), debug.log (상세 디버깅)
+    agent_log_path = os.path.join(logs_dir, f"agent_{port}.log")
+    debug_log_path = os.path.join(logs_dir, f"debug_{port}.log")
     
-    # Create file handler with append mode to keep all logs
-    file_handler = logging.FileHandler(log_file_path, mode='a')
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(logging.Formatter(
+    # Agent log handler - 게임 진행 상황만 (INFO 이상)
+    agent_handler = logging.FileHandler(agent_log_path, mode='a')
+    agent_handler.setLevel(logging.INFO)
+    agent_handler.setFormatter(logging.Formatter(
+        '%(asctime)s | %(message)s',
+        datefmt='%H:%M:%S'
+    ))
+    
+    # Debug log handler - 모든 디버그 정보 (DEBUG 이상)
+    debug_handler = logging.FileHandler(debug_log_path, mode='a')
+    debug_handler.setLevel(logging.DEBUG)
+    debug_handler.setFormatter(logging.Formatter(
         '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     ))
     
-    # Console handler
+    # Console handler - 중요한 정보만
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(logging.Formatter(
-        '%(asctime)s [%(levelname)s] %(message)s',
+        '%(asctime)s | %(message)s',
         datefmt='%H:%M:%S'
     ))
     
-    # Configure root logger - clear existing handlers first
+    # Configure root logger
     root_logger = logging.getLogger()
-    root_logger.handlers.clear()  # 중복 방지
+    root_logger.handlers.clear()
     root_logger.setLevel(logging.DEBUG)
-    root_logger.addHandler(file_handler)
+    root_logger.addHandler(agent_handler)
+    root_logger.addHandler(debug_handler)
     root_logger.addHandler(console_handler)
     
-    # Configure uvicorn loggers - clear and set handlers
+    # Uvicorn/FastAPI 로그는 debug.log에만
     for logger_name in ['uvicorn', 'uvicorn.access', 'uvicorn.error']:
         uvicorn_logger = logging.getLogger(logger_name)
-        uvicorn_logger.handlers.clear()  # 중복 방지
-        uvicorn_logger.propagate = True  # root logger로 전파
+        uvicorn_logger.handlers.clear()
+        uvicorn_logger.propagate = False  # root로 전파 안함
+        uvicorn_logger.addHandler(debug_handler)
         uvicorn_logger.setLevel(logging.INFO)
     
-    # OpenAI SDK loggers - 너무 상세하므로 WARNING만
-    for logger_name in ['openai', 'httpx', 'httpcore']:
+    # OpenAI/HTTP 디버그는 debug.log에만
+    for logger_name in ['openai', 'openai.agents', 'httpx', 'httpcore']:
         sdk_logger = logging.getLogger(logger_name)
-        sdk_logger.setLevel(logging.WARNING)
-        sdk_logger.propagate = True
+        sdk_logger.handlers.clear()
+        sdk_logger.propagate = False
+        sdk_logger.addHandler(debug_handler)
+        sdk_logger.setLevel(logging.DEBUG)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mafia AI Agent Player")
     parser.add_argument("--port", type=int, required=True, help="Port to run on")
     parser.add_argument("--api-key", type=str, required=True, help="OpenAI API key")
+    parser.add_argument("--game-id", type=str, required=True, help="Game session ID (short UUID)")
     parser.add_argument("--agent-id", type=int, required=True, help="Agent ID")
     
     args = parser.parse_args()
@@ -398,14 +284,14 @@ if __name__ == "__main__":
     # Setup logging BEFORE anything else
     setup_logging(args.port)
 
-    # Set OpenAI API key
+    # Set OpenAI API key and game ID
     os.environ["OPENAI_API_KEY"] = args.api_key
+    state.game_id = args.game_id
     state.agent_id = args.agent_id
     
-    logger.info(f"="*60)
-    logger.info(f"Starting Mafia AI Agent #{args.agent_id} on port {args.port}")
-    logger.info(f"OpenAI API Key: {args.api_key[:10]}...")
-    logger.info(f"="*60)
+    logger.info("=" * 60)
+    logger.info(f"🚀 Mafia AI Agent #{args.agent_id} | Port {args.port}")
+    logger.info("=" * 60)
     
     # Run uvicorn with log_config to integrate with our logging
     uvicorn.run(

@@ -22,8 +22,8 @@ spawned_agents: Dict[int, Dict[str, Any]] = {}
 
 class SpawnRequest(BaseModel):
     """Request to spawn a new AI agent for a game session"""
+    game_id: str  # Short UUID to identify game session
     openai_api_key: str
-    game_session_id: str = "default"  # Optional game identifier
 
 
 class SpawnResponse(BaseModel):
@@ -106,6 +106,7 @@ async def spawn_agent(request: SpawnRequest):
                 "player.py",
                 "--port", str(port),
                 "--api-key", request.openai_api_key,
+                "--game-id", request.game_id,
                 "--agent-id", str(agent_id)
             ],
             cwd=".",

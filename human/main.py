@@ -47,6 +47,7 @@ class GameEngine:
     """Main game engine with homomorphic encryption"""
     
     def __init__(self):
+        self.game_id: Optional[str] = None  # Short UUID for game session
         self.context: Optional[ts.Context] = None
         self.players: List[Player] = []
         self.num_players = 0
@@ -58,14 +59,16 @@ class GameEngine:
         self.last_voted_out: Optional[int] = None
         self.chat_message_id_counter = 0
         
-    def setup_game(self, num_ai_agents: int, ai_addresses: List[str]):
+    def setup_game(self, num_ai_agents: int, ai_addresses: List[str], game_id: str):
         """
         Initialize the game with players and roles.
         
         Args:
             num_ai_agents: Number of AI agents
             ai_addresses: List of AI agent URLs
+            game_id: Short UUID to identify this game session
         """
+        self.game_id = game_id
         self.num_players = num_ai_agents + 1  # +1 for human
         
         # Create cryptographic context
@@ -121,6 +124,7 @@ class GameEngine:
             response = await client.post(
                 f"{player.address}/init",
                 json={
+                    "game_id": self.game_id,
                     "public_context": public_context,
                     "role": player.role,
                     "player_index": player.index,
@@ -642,13 +646,14 @@ class GameEngine:
 # Main Entry Point
 # ============================================================================
 
-async def spawn_agents_from_lobbies(lobby_addresses: List[str], openai_api_key: str) -> List[str]:
+async def spawn_agents_from_lobbies(lobby_addresses: List[str], openai_api_key: str, game_id: str) -> List[str]:
     """
     Spawn AI agents from lobby servers CONCURRENTLY.
     
     Args:
         lobby_addresses: List of lobby server URLs
         openai_api_key: OpenAI API key for agents
+        game_id: Short UUID to identify this game session
         
     Returns:
         List of spawned agent addresses
@@ -664,8 +669,8 @@ async def spawn_agents_from_lobbies(lobby_addresses: List[str], openai_api_key: 
         response = await client.post(
             f"{lobby_url}/spawn_agent",
             json={
-                "openai_api_key": openai_api_key,
-                "game_session_id": f"game_{agent_num}"
+                "game_id": game_id,
+                "openai_api_key": openai_api_key
             }
         )
         response.raise_for_status()
@@ -724,10 +729,16 @@ async def check_agent_health(address: str) -> bool:
 
 async def main():
     """Main entry point"""
+    import uuid
+    
     print("=" * 60)
     print("SECURE P2P MAFIA GAME")
     print("Homomorphic Encryption Edition")
     print("=" * 60)
+    
+    # Generate short game ID (first 8 chars of UUID)
+    game_id = str(uuid.uuid4())[:8]
+    print(f"\n[Setup] Game ID: {game_id}")
     
     # Get OpenAI API Key
     openai_api_key = NETWORK_CONFIG.get("openai_api_key", "").strip()
@@ -802,7 +813,7 @@ async def main():
     
     # Spawn agents from lobbies
     try:
-        agent_addresses = await spawn_agents_from_lobbies(lobby_addresses, openai_api_key)
+        agent_addresses = await spawn_agents_from_lobbies(lobby_addresses, openai_api_key, game_id)
     except Exception as e:
         print(f"[Error] Failed to spawn agents: {e}")
         return
@@ -814,7 +825,7 @@ async def main():
     engine = GameEngine()
     
     # Setup game
-    engine.setup_game(num_agents, agent_addresses)
+    engine.setup_game(num_agents, agent_addresses, game_id)
     
     # Initialize agents with crypto context and roles
     print("\n[Setup] Initializing agents with encrypted roles...")
