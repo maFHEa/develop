@@ -123,7 +123,8 @@ class MafiaGameApp(App):
         self.game_engine.setup_game(
             num_ai_agents=len(agent_addresses),
             ai_addresses=agent_addresses,
-            game_id=game_id
+            game_id=game_id,
+            lobby_addresses=self.lobby_addresses
         )
         loading_screen.add_status("✓ Game setup complete", "green")
         
@@ -200,20 +201,20 @@ class MafiaGameApp(App):
                 
                 # Day phase - use TUI
                 self.game_engine.phase = "day"
-                await self.game_engine.start_agent_chat_phase(duration_seconds=300)
+                chat_duration = 120  # 2 minutes for chat
+                await self.game_engine.start_agent_chat_phase(duration_seconds=chat_duration)
                 await self.game_engine.broadcast_update("day", f"Day {self.game_engine.day_number} discussion has begun.")
                 
-                # Show chat screen
-                chat_screen = ChatScreen(self.game_engine)
+                # Show chat screen with timer
+                chat_screen = ChatScreen(self.game_engine, duration_seconds=chat_duration)
                 self.push_screen(chat_screen)
                 
-                # Wait for user to proceed or quit (Ctrl+D)
+                # Wait for user to proceed or timeout
                 while not chat_screen.should_proceed:
                     await asyncio.sleep(0.5)
                 
-                self.pop_screen()
-                
-                await self.game_engine.stop_agent_chat_phase()
+                # Screen will dismiss itself, no need to pop
+                # stop_agent_chat_phase is called in chat_screen._do_proceed()
                 
                 # Vote phase - use TUI
                 self.game_engine.phase = "vote"

@@ -31,6 +31,7 @@ class GameOverScreen(Screen):
         background: $panel;
         border: solid $primary;
         padding: 2;
+        align-horizontal: center;
     }
     
     #winner_title {
@@ -48,7 +49,7 @@ class GameOverScreen(Screen):
     
     #exit_button {
         width: 20;
-        margin: 1 auto;
+        margin-top: 2;
     }
     """
     
