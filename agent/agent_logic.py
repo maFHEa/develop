@@ -144,7 +144,6 @@ def create_agent_tools(state, phase: str = "setup"):
     
     # 4. Night Action Tools
     @function_tool
-    @function_tool
     def submit_night_action(
         target_index: Annotated[int, "Index of player to target (0-indexed). Use -1 to abstain. Doctor CAN target themselves for self-heal."]
     ) -> str:
