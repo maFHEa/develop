@@ -2,3 +2,4 @@ tenseal==0.3.14
 httpx==0.25.1
 pydantic==2.5.0
 numpy>=1.21.0
+textual==0.47.1

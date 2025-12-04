@@ -12,6 +12,7 @@ class InitRequest(BaseModel):
     role: str
     player_index: int
     num_players: int
+    host_address: str = "http://localhost:5000"  # Host address for sending messages
 
 
 class GameUpdateRequest(BaseModel):
@@ -20,6 +21,14 @@ class GameUpdateRequest(BaseModel):
     message: str
     survivors: List[int]
     dead_players: List[int]
+
+
+class ChatPhaseRequest(BaseModel):
+    """Start or stop chat phase"""
+    action: str  # "start" or "stop"
+    duration_seconds: int = 60  # 대화 시간 (초)
+    survivors: List[int] = []
+    turn: int = 0
 
 
 class ActionResponse(BaseModel):

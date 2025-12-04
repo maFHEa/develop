@@ -27,6 +27,9 @@ from security import (
 
 from config import GAME_CONFIG, NETWORK_CONFIG
 
+# Import after sys.path.append to find agent modules
+from chat import GameChatHistory
+
 
 # ============================================================================
 # Game State
@@ -58,6 +61,8 @@ class GameEngine:
         self.last_killed: List[int] = []
         self.last_voted_out: Optional[int] = None
         self.chat_message_id_counter = 0
+        self.chat_history = GameChatHistory()
+        self.last_displayed_msg_id = -1
         
     def setup_game(self, num_ai_agents: int, ai_addresses: List[str], game_id: str):
         """
@@ -212,8 +217,8 @@ class GameEngine:
             sender_index: Index of the player sending the message
             message: The chat message content
         """
-        msg_id = self.chat_message_id_counter
-        self.chat_message_id_counter += 1
+        # Store in local chat history and get the msg_id
+        msg_id = self.chat_history.add_message(sender_index, self.phase, message, self.day_number)
         
         chat_data = {
             "msg_id": msg_id,
@@ -240,11 +245,57 @@ class GameEngine:
         """Send a chat message to a single AI agent"""
         try:
             await client.post(
-                f"{player.address}/broadcast_chat",
+                f"{player.address}/chat/broadcast",
                 json=chat_data
             )
         except Exception as e:
             print(f"[Engine] Error sending chat to {player.name}: {e}")
+    
+    async def start_agent_chat_phase(self, duration_seconds: int = 300):
+        """Start chat phase for all agents."""
+        print(f"[Engine] Starting chat phase ({duration_seconds}s)...")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            tasks = []
+            for player in self.players:
+                if not player.is_human and player.alive:
+                    chat_request = {
+                        "action": "start",
+                        "duration_seconds": duration_seconds,
+                        "survivors": self.get_survivors(),
+                        "turn": self.day_number
+                    }
+                    tasks.append(self._send_chat_phase_request(client, player, chat_request))
+            
+            await asyncio.gather(*tasks, return_exceptions=True)
+    
+    async def stop_agent_chat_phase(self):
+        """Stop chat phase for all agents."""
+        print(f"[Engine] Stopping chat phase...")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            tasks = []
+            for player in self.players:
+                if not player.is_human and player.alive:
+                    chat_request = {"action": "stop"}
+                    tasks.append(self._send_chat_phase_request(client, player, chat_request))
+            
+            await asyncio.gather(*tasks, return_exceptions=True)
+    
+    async def _send_chat_phase_request(
+        self,
+        client: httpx.AsyncClient,
+        player: Player,
+        request_data: Dict
+    ):
+        """Send chat phase request to a single agent."""
+        try:
+            await client.post(
+                f"{player.address}/chat/phase",
+                json=request_data
+            )
+        except Exception as e:
+            print(f"[Engine] Error sending chat phase request to {player.name}: {e}")
     
     async def collect_encrypted_actions(self, phase: str, message: str) -> List[str]:
         """
@@ -339,12 +390,6 @@ class GameEngine:
         """Get encrypted action from human player"""
         human = self.players[self.human_player_index]
         
-        print(f"\n{'='*60}")
-        print(f"YOUR TURN - {phase.upper()} PHASE")
-        print(f"Your Role: {human.role.upper()}")
-        print(f"Survivors: {survivors}")
-        print(f"{'='*60}")
-        
         # Check if human can act
         can_act = False
         if phase == "night" and human.role in ["mafia", "doctor", "police"]:
@@ -353,43 +398,30 @@ class GameEngine:
             can_act = True
         
         if not can_act:
-            print("[You] You have no action this phase (sending encrypted dummy data)")
+            # No action needed - send zero vector
             zero_vec = create_zero_vector(self.num_players, self.context)
             return serialize_encrypted_vector(zero_vec)
         
-        # Get target from user
-        valid_targets = [i for i in survivors if i != self.human_player_index]
+        # Check if target was set by TUI
+        target = getattr(self, 'human_night_target', None) if phase == "night" else getattr(self, 'human_vote_target', None)
         
-        action_name = "target" if phase == "night" else "vote for"
+        if target is None or target == -1:
+            # Abstain - send zero vector
+            zero_vec = create_zero_vector(self.num_players, self.context)
+            return serialize_encrypted_vector(zero_vec)
         
-        while True:
-            try:
-                print(f"\nValid targets: {valid_targets}")
-                target_input = input(f"Enter player index to {action_name} (or -1 to skip): ")
-                target = int(target_input)
-                
-                if target == -1:
-                    # Abstain - send zero vector
-                    zero_vec = create_zero_vector(self.num_players, self.context)
-                    return serialize_encrypted_vector(zero_vec)
-                
-                if target in valid_targets:
-                    # Valid target - encrypt one-hot vector
-                    encrypted_vec = create_one_hot_vector(
-                        self.num_players,
-                        target,
-                        self.context
-                    )
-                    print(f"[You] Action encrypted and submitted")
-                    return serialize_encrypted_vector(encrypted_vec)
-                else:
-                    print(f"Invalid target. Choose from {valid_targets}")
-                    
-            except ValueError:
-                print("Please enter a valid number")
-            except KeyboardInterrupt:
-                print("\nGame interrupted by user")
-                sys.exit(0)
+        if target in survivors and target != self.human_player_index:
+            # Valid target - encrypt one-hot vector
+            encrypted_vec = create_one_hot_vector(
+                self.num_players,
+                target,
+                self.context
+            )
+            return serialize_encrypted_vector(encrypted_vec)
+        else:
+            # Invalid target - send zero vector
+            zero_vec = create_zero_vector(self.num_players, self.context)
+            return serialize_encrypted_vector(zero_vec)
     
     async def execute_night_phase(self):
         """Execute night phase with homomorphic encryption"""
@@ -589,40 +621,25 @@ class GameEngine:
                 break
     
     async def execute_day_phase(self):
-        """Execute day phase with chat discussion"""
+        """Execute day phase with chat discussion using Textual TUI"""
         self.phase = "day"
         
-        print(f"\n{'='*60}")
-        print(f"DAY {self.day_number} - DISCUSSION PHASE")
-        print(f"{'='*60}")
-        print("Players can discuss and share information.")
-        print("Commands:")
-        print("  - Type a message to send to all players")
-        print("  - Type 'proceed' or press Enter to move to voting")
-        print(f"{'='*60}\n")
+        # Start chat phase for all agents
+        await self.start_agent_chat_phase(duration_seconds=300)  # 5분 대화
         
         # Broadcast day phase start to agents
         await self.broadcast_update("day", f"Day {self.day_number} discussion has begun.")
         
-        # Chat loop
-        while True:
-            try:
-                user_input = input("[You] ").strip()
-                
-                if user_input.lower() in ['proceed', '']:
-                    break
-                
-                if user_input:
-                    # Human sends message
-                    print(f"[You] Broadcasting: {user_input}")
-                    await self.broadcast_chat_message(self.human_player_index, user_input)
-                    
-                    # Give AI agents time to potentially respond
-                    await asyncio.sleep(1)
-                    
-            except KeyboardInterrupt:
-                print("\n[Game] Interrupted by user")
-                raise
+        # Run Textual TUI for chat
+        from tui import run_chat_tui
+        should_proceed = await run_chat_tui(self)
+        
+        # Stop chat phase for all agents
+        await self.stop_agent_chat_phase()
+        
+        if not should_proceed:
+            print("\n[Game] Chat phase interrupted by user")
+            raise KeyboardInterrupt
     
     async def end_game(self, winner: str):
         """End the game and reveal roles"""
@@ -728,6 +745,23 @@ async def check_agent_health(address: str) -> bool:
 
 
 async def main():
+    """Main entry point - choose between TUI and CLI mode"""
+    import sys
+    
+    # Check if --cli flag is provided
+    use_cli = "--cli" in sys.argv
+    
+    if use_cli:
+        # Original CLI mode
+        await main_cli()
+    else:
+        # New TUI mode (default)
+        from game_app import run_game_tui
+        await run_game_tui()
+
+
+async def main_cli():
+    """Original CLI-based game (kept for backwards compatibility)"""
     """Main entry point"""
     import uuid
     

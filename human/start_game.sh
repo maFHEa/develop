@@ -44,4 +44,4 @@ echo ""
 echo "Starting Game Host..."
 echo ""
 
-python main.py
+python app.py
