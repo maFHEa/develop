@@ -6,7 +6,8 @@ Multiple lobbies can run simultaneously for multiple games.
 import asyncio
 import subprocess
 import socket
-from typing import Dict
+import os
+from typing import Dict, Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
@@ -15,8 +16,8 @@ import httpx
 
 app = FastAPI(title="Mafia Agent Lobby")
 
-# Track spawned agents
-spawned_agents: Dict[int, subprocess.Popen] = {}
+# Track spawned agents and their log files
+spawned_agents: Dict[int, Dict[str, Any]] = {}
 
 
 class SpawnRequest(BaseModel):
@@ -34,26 +35,40 @@ class SpawnResponse(BaseModel):
 
 def find_free_port(start: int = 8001, end: int = 9000) -> int:
     """
-    Find an available port in the specified range.
+    Find an available port by asking the OS to assign one.
+    This is more reliable than scanning a range.
     
     Args:
-        start: Starting port number
-        end: Ending port number
+        start: Ignored (kept for compatibility)
+        end: Ignored (kept for compatibility)
         
     Returns:
-        Available port number
-        
-    Raises:
-        RuntimeError: If no free port found
+        An available port number
     """
-    for port in range(start, end):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """
+    Clean up all spawned agent processes when the lobby shuts down.
+    This prevents orphaned child processes.
+    """
+    print("[Lobby] Shutting down. Terminating all spawned agents...")
+    for agent_id, agent_info in list(spawned_agents.items()):
+        process = agent_info["process"]
+        
+        print(f"[Lobby] Terminating Agent #{agent_id} (PID: {process.pid})...")
+        process.terminate()
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('', port))
-                return port
-        except OSError:
-            continue
-    raise RuntimeError(f"No free port found in range {start}-{end}")
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            print(f"[Lobby] Agent #{agent_id} did not terminate, killing.")
+            process.kill()
+    print("[Lobby] All agents terminated.")
 
 
 @app.post("/spawn_agent", response_model=SpawnResponse)
@@ -78,22 +93,28 @@ async def spawn_agent(request: SpawnRequest):
         
         # Generate agent ID
         agent_id = len(spawned_agents) + 1
-        
-        # Launch player.py as subprocess
-        # Use the venv's python executable to ensure dependencies are loaded
+
+        # Create logs directory if it doesn't exist
+        logs_dir = "logs"
+        os.makedirs(logs_dir, exist_ok=True)
+
+        # Launch player.py as subprocess with logs going to files
+        # stdout and stderr both go to the same log file managed by player.py
         process = subprocess.Popen(
             [
-                "./venv/bin/python", "player.py",
+                "./venv/bin/python", "-u",  # -u for unbuffered output
+                "player.py",
                 "--port", str(port),
                 "--api-key", request.openai_api_key,
                 "--agent-id", str(agent_id)
             ],
             cwd=".",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            # Let the logs be handled by player.py's logging system
+            stdout=None,
+            stderr=None
         )
         # Track the process
-        spawned_agents[agent_id] = process
+        spawned_agents[agent_id] = {"process": process, "port": port}
         
         address = f"http://localhost:{port}"
         
@@ -130,7 +151,7 @@ async def health_check():
     return {
         "status": "healthy",
         "spawned_agents": len(spawned_agents),
-        "active_agents": sum(1 for p in spawned_agents.values() if p.poll() is None)
+        "active_agents": sum(1 for p in spawned_agents.values() if p["process"].poll() is None)
     }
 
 
@@ -142,12 +163,16 @@ async def terminate_agent(agent_id: int):
     Args:
         agent_id: ID of the agent to terminate
     """
-    if agent_id not in spawned_agents:
+    agent_info = spawned_agents.get(agent_id)
+    if not agent_info:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
-    
-    process = spawned_agents[agent_id]
+
+    process = agent_info["process"]
+    stderr_file = agent_info["stderr_file"]
+
     process.terminate()
     process.wait(timeout=5)
+    stderr_file.close() # Close the log file
     
     del spawned_agents[agent_id]
     

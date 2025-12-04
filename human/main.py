@@ -644,7 +644,7 @@ class GameEngine:
 
 async def spawn_agents_from_lobbies(lobby_addresses: List[str], openai_api_key: str) -> List[str]:
     """
-    Spawn AI agents from lobby servers.
+    Spawn AI agents from lobby servers CONCURRENTLY.
     
     Args:
         lobby_addresses: List of lobby server URLs
@@ -653,46 +653,53 @@ async def spawn_agents_from_lobbies(lobby_addresses: List[str], openai_api_key: 
     Returns:
         List of spawned agent addresses
     """
-    print(f"[Setup] Spawning {len(lobby_addresses)} AI agents from lobbies...")
-    
-    agent_addresses = []
-    
+    print(f"[Setup] Spawning {len(lobby_addresses)} AI agents concurrently from lobbies...")
+
+    async def spawn_and_wait(client: httpx.AsyncClient, lobby_url: str, agent_num: int) -> str:
+        """Helper to spawn one agent and wait for it to be healthy."""
+        # Add a delay to space out the requests, as requested
+        await asyncio.sleep((agent_num - 1) * 0.5)
+        
+        print(f"[Setup] Requesting Agent #{agent_num} spawn from {lobby_url}...")
+        response = await client.post(
+            f"{lobby_url}/spawn_agent",
+            json={
+                "openai_api_key": openai_api_key,
+                "game_session_id": f"game_{agent_num}"
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        agent_address = data["address"]
+        print(f"[Setup] Agent #{agent_num} spawned at {agent_address}, waiting for startup...")
+
+        # Wait for agent to be fully ready (with retries)
+        for attempt in range(15):
+            await asyncio.sleep(1)
+            if await check_agent_health(agent_address):
+                print(f"[Setup] ✓ Agent #{agent_num} ready at {agent_address}")
+                return agent_address
+            print(f"[Setup] Agent #{agent_num} not ready yet, retrying ({attempt+1}/15)...")
+        
+        raise Exception(f"Agent #{agent_num} at {agent_address} failed to start after 15 seconds")
+
     async with httpx.AsyncClient(timeout=30) as client:
-        for i, lobby_url in enumerate(lobby_addresses, 1):
-            try:
-                print(f"[Setup] Requesting Agent spawn from {lobby_url}...")
-                response = await client.post(
-                    f"{lobby_url}/spawn_agent",
-                    json={
-                        "openai_api_key": openai_api_key,
-                        "game_session_id": f"game_{i}"
-                    }
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                agent_address = data["address"]
-                print(f"[Setup] Agent #{i} spawned at {agent_address}, waiting for startup...")
-                
-                # Wait for agent to be fully ready (with retries)
-                ready = False
-                for attempt in range(10):
-                    await asyncio.sleep(1)
-                    if await check_agent_health(agent_address):
-                        ready = True
-                        break
-                    print(f"[Setup] Agent #{i} not ready yet, retrying ({attempt+1}/10)...")
-                
-                if not ready:
-                    raise Exception(f"Agent at {agent_address} failed to start after 10 seconds")
-                
-                agent_addresses.append(agent_address)
-                print(f"[Setup] ✓ Agent #{i} ready at {agent_address}")
-                
-            except Exception as e:
-                print(f"[Setup] ✗ Failed to spawn agent from {lobby_url}: {e}")
-                raise
-    
+        tasks = [
+            spawn_and_wait(client, lobby_url, i)
+            for i, lobby_url in enumerate(lobby_addresses, 1)
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        agent_addresses = []
+        for res in results:
+            if isinstance(res, Exception):
+                # If any agent fails to spawn, we should ideally handle it.
+                # For now, we'll print the error and stop.
+                print(f"[Setup] ✗ FATAL: Failed to spawn an agent: {res}")
+                raise res 
+            agent_addresses.append(res)
+            
     return agent_addresses
 
 

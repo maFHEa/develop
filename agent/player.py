@@ -14,7 +14,7 @@ import uvicorn
 import asyncio
 import tenseal as ts
 
-from agents import Agent, Runner, function_tool
+from agents import Agent, Runner, function_tool, ToolCallItem, ToolCallOutputItem, MessageOutputItem, ItemHelpers
 
 from models import (
     InitRequest,
@@ -226,6 +226,7 @@ async def initialize_agent(request: InitRequest):
 async def request_action(request: GameUpdateRequest):
     """Host requests an action from this agent."""
     try:
+        logger.info("-"*50)
         state.action_submitted = False
         state.pending_action_target = None
         state.pending_chat_messages = []
@@ -266,19 +267,47 @@ Think step-by-step about your strategy and then make your call."""
                 max_turns=5 
             )
 
-            # Log AI interaction
-            logger.info("---AI EXECUTION START---")
-            for turn in result.history:
-                if turn.tool_calls:
-                    for call in turn.tool_calls:
-                        logger.info(f"[Function Call] AI wants to call: {call.tool_name}({json.dumps(call.tool_input)})")
-                        # Find the corresponding output
-                        for tool_output in turn.tool_outputs:
-                            if tool_output.tool_call_id == call.id:
-                                logger.info(f"[Function Result] Output: {tool_output.output}")
-                                break
-            logger.info(f"[AI Final Answer] {result.final_output}")
-            logger.info("---AI EXECUTION END---")
+            # Log AI interaction with detailed information
+            logger.info("=" * 60)
+            logger.info("AI EXECUTION SUMMARY")
+            logger.info("=" * 60)
+            logger.info(f"Total items generated: {len(result.new_items)}")
+            logger.info("")
+            
+            for idx, item in enumerate(result.new_items, 1):
+                logger.info(f"--- Item {idx}/{len(result.new_items)} ---")
+                
+                if isinstance(item, ToolCallItem):
+                    # Function call by AI
+                    func_name = getattr(item.raw_item, 'name', 'unknown')
+                    func_args = getattr(item.raw_item, 'arguments', '{}')
+                    logger.info(f"[FUNCTION CALL]")
+                    logger.info(f"  Function: {func_name}")
+                    logger.info(f"  Arguments: {func_args}")
+                    
+                elif isinstance(item, ToolCallOutputItem):
+                    # Function execution result
+                    logger.info(f"[FUNCTION RESULT]")
+                    logger.info(f"  Output: {item.output}")
+                    
+                elif isinstance(item, MessageOutputItem):
+                    # AI's message/thought
+                    message_text = ItemHelpers.text_message_output(item)
+                    logger.info(f"[AI MESSAGE]")
+                    logger.info(f"  Content: {message_text}")
+                    
+                else:
+                    # Other types
+                    item_type = type(item).__name__
+                    logger.info(f"[OTHER: {item_type}]")
+                    if hasattr(item, 'raw_item'):
+                        raw_type = getattr(item.raw_item, 'type', 'unknown')
+                        logger.info(f"  Raw type: {raw_type}")
+                
+                logger.info("")
+            
+            logger.info(f"[FINAL OUTPUT] {result.final_output}")
+            logger.info("=" * 60)
 
             state.session_memory.add_turn(prompt, str(result.final_output))
 
@@ -322,15 +351,41 @@ def setup_logging(port: int):
     
     log_file_path = os.path.join(logs_dir, f"agent_{port}.log")
     
-    # Configure root logger
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file_path, mode='w'), # 'w' to clear on start
-            logging.StreamHandler(sys.stdout) # Also log to console
-        ]
-    )
+    # Create file handler with append mode to keep all logs
+    file_handler = logging.FileHandler(log_file_path, mode='a')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+    
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%H:%M:%S'
+    ))
+    
+    # Configure root logger - clear existing handlers first
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()  # 중복 방지
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    # Configure uvicorn loggers - clear and set handlers
+    for logger_name in ['uvicorn', 'uvicorn.access', 'uvicorn.error']:
+        uvicorn_logger = logging.getLogger(logger_name)
+        uvicorn_logger.handlers.clear()  # 중복 방지
+        uvicorn_logger.propagate = True  # root logger로 전파
+        uvicorn_logger.setLevel(logging.INFO)
+    
+    # OpenAI SDK loggers - 너무 상세하므로 WARNING만
+    for logger_name in ['openai', 'httpx', 'httpcore']:
+        sdk_logger = logging.getLogger(logger_name)
+        sdk_logger.setLevel(logging.WARNING)
+        sdk_logger.propagate = True
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mafia AI Agent Player")
@@ -340,13 +395,23 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    # Setup logging
+    # Setup logging BEFORE anything else
     setup_logging(args.port)
 
     # Set OpenAI API key
     os.environ["OPENAI_API_KEY"] = args.api_key
     state.agent_id = args.agent_id
     
+    logger.info(f"="*60)
     logger.info(f"Starting Mafia AI Agent #{args.agent_id} on port {args.port}")
+    logger.info(f"OpenAI API Key: {args.api_key[:10]}...")
+    logger.info(f"="*60)
     
-    uvicorn.run(app, host="0.0.0.0", port=args.port)
+    # Run uvicorn with log_config to integrate with our logging
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=args.port,
+        log_config=None,  # Disable default logging
+        access_log=True
+    )
