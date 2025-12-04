@@ -89,11 +89,12 @@ NETWORK_CONFIG: Dict[str, Any] = {
 }
 
 
-# Cryptography Configuration
+# Cryptography Configuration (OpenFHE)
 CRYPTO_CONFIG: Dict[str, Any] = {
-    "scheme": "BFV",
-    "poly_modulus_degree": 8192,
-    "plain_modulus": 1032193,
+    "scheme": "BFVrns",  # OpenFHE BFV with RNS
+    "plaintext_modulus": 65537,
+    "multiplicative_depth": 2,
+    "multiparty_mode": "NOISE_FLOODING_MULTIPARTY",  # Most secure threshold mode
 }
 
 

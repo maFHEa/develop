@@ -1,4 +1,4 @@
-tenseal==0.3.14
+openfhe>=1.4.2
 httpx==0.25.1
 pydantic==2.5.0
 numpy>=1.21.0
