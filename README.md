@@ -1,248 +1,296 @@
-# Secure P2P Mafia Game with Homomorphic Encryption
+# maFHEa: Mafia Game with Threshold FHE
 
-A cryptographically secure implementation of the Mafia social deduction game using **Homomorphic Encryption (TenSEAL)** and **AI Agents (OpenAI)**.
+OpenFHE 기반 **Threshold Fully Homomorphic Encryption**을 사용한 안전한 마피아 게임 구현
 
-## 🔐 Core Security Features
+## 개요
 
-### Homomorphic Encryption (BFV Scheme)
-- **Blind Computation**: The game engine aggregates encrypted actions without ever seeing individual player choices
-- **Secret Key Management**: Only the host holds the secret key, acting as a Trusted Execution Environment
-- **Parameters**: 
-  - Scheme: BFV (Fan-Vercauteren)
-  - Polynomial Modulus Degree: 8192 (enables multiplication depth for complex operations)
-  - Plain Modulus: 1032193
+이 프로젝트는 마피아 게임의 역할 배분을 **분산 키 생성(DKG)**과 **Threshold 복호화**를 통해 안전하게 수행합니다. 어떤 단일 참가자도 다른 플레이어의 역할을 알 수 없으며, 모든 플레이어가 협력해야만 역할이 공개됩니다.
 
-### Uniform Action Protocol (Anti-Traffic-Analysis)
-- **Critical Security Requirement**: EVERY player sends identical-sized encrypted packets every turn
-- **Dummy Data**: Players with no action (e.g., Citizens at night) send encrypted zero vectors
-- **Prevention**: Eliminates network traffic analysis attacks that could reveal player roles
+## 핵심 보안 특성
 
-## 🏗️ System Architecture
+| 특성 | 설명 |
+|------|------|
+| **분산 키 생성 (DKG)** | 공개키는 공유, 비밀키는 각 플레이어가 일부만 보유 |
+| **n-of-n Threshold** | 모든 플레이어가 참여해야 복호화 가능 |
+| **NOISE_FLOODING** | 부분 복호화 시 정보 누출 방지 |
+| **개별 역할 복호화** | 각 플레이어는 자신의 역할만 알 수 있음 |
+| **Uniform Action Protocol** | 모든 플레이어가 동일 크기 패킷 전송 (트래픽 분석 방지) |
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    HUMAN HOST SYSTEM                        │
-│  ┌────────────────────────────────────────────────────┐     │
-│  │  Game Engine (Server)                              │     │
-│  │  - Aggregates encrypted vectors blindly            │     │
-│  │  - Computes:Enc(Killed) = Enc(Attack)*(1-Enc(Heal))│     │
-│  │  - Decrypts ONLY final results                     │     │
-│  └────────────────────────────────────────────────────┘     │
-│  ┌────────────────────────────────────────────────────┐     │
-│  │  Human Player Interface                            │     │
-│  │  - Participates as Player 0                        │     │
-│  │  - Encrypts own actions locally                    │     │
-│  └────────────────────────────────────────────────────┘     │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            │ P2P Network
-                            │
-        ┌───────────────────┼───────────────────┐
-        │                   │                   │
-┌───────▼────────┐  ┌───────▼────────┐  ┌──────▼─────────┐
-│  AI Agent 1    │  │  AI Agent 2    │  │  AI Agent N    │
-│                │  │                │  │                │
-│ - OpenAI LLM   │  │ - OpenAI LLM   │  │ - OpenAI LLM   │
-│ - Autonomous   │  │ - Autonomous   │  │ - Autonomous   │
-│ - Encrypts     │  │ - Encrypts     │  │ - Encrypts     │
-│   locally      │  │   locally      │  │   locally      │
-└────────────────┘  └────────────────┘  └────────────────┘
-```
-
-## 📁 Directory Structure
+## 시스템 아키텍처
 
 ```
-mafia/
-│
-├── agent/                      # AI Agent System
-│   ├── lobby.py               # Spawner server (FastAPI)
-│   ├── player.py              # Autonomous AI agent instance
-│   ├── security.py            # HE & serialization utilities
-│   └── requirements.txt       # Agent dependencies
-│
-├── human/                     # Human Host System
-│   ├── main.py               # Game engine + human player
-│   ├── config.py             # Game configuration
-│   └── requirements.txt      # Host dependencies
-│
-└── README.md                 # This file
+┌─────────────────────────────────────────────────────────────────┐
+│                         Game Flow                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Human Host (Lead)          AI Agents                          │
+│   ┌──────────────┐     ┌──────────┐ ┌──────────┐ ┌──────────┐  │
+│   │   main.py    │     │ Agent 1  │ │ Agent 2  │ │ Agent 3  │  │
+│   │              │     │ player.py│ │ player.py│ │ player.py│  │
+│   └──────┬───────┘     └────┬─────┘ └────┬─────┘ └────┬─────┘  │
+│          │                  │            │            │         │
+│          │    1. DKG Protocol (Sequential Key Chain)            │
+│          ├─────────────────▶├───────────▶├───────────▶│         │
+│          │                  │            │            │         │
+│          │    2. Encrypted Role Assignment                      │
+│          │    Enc(roles, pk_joint)                              │
+│          │                  │            │            │         │
+│          │    3. Threshold Decryption (All parties)             │
+│          ├─────────────────▶├───────────▶├───────────▶│         │
+│          │◀─────────────────┤◀───────────┤◀───────────┤         │
+│          │                  │            │            │         │
+│          │    4. Fusion → Individual Roles                      │
+│          │                                                      │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## 🎮 Game Roles
+## DKG (Distributed Key Generation) 프로토콜
 
-- **Mafia**: Eliminate citizens at night
-- **Doctor**: Save one player from death each night
-- **Police**: Investigate one player each night (learns if Mafia)
-- **Citizen**: No night action, participates in voting
+### 1단계: CryptoContext 생성 및 배포
 
-## 🚀 Setup & Installation
-
-### Prerequisites
-- Python 3.8+
-- OpenAI API Key
-- Linux/macOS (Windows may require WSL for TenSEAL)
-
-### Installation
-
-1. **Install Agent Dependencies**
-```bash
-cd agent
-pip install -r requirements.txt
+```
+Human Host가 OpenFHE CryptoContext 생성
+  ↓
+모든 Agent에게 CryptoContext 전송 (/dkg_setup)
 ```
 
-2. **Install Host Dependencies**
-```bash
-cd human
-pip install -r requirements.txt
+### 2단계: 순차적 키 체인 생성 
+
+```
+Round 0: Human (Lead)
+    kp0 = cc.KeyGen()
+    pk_chain = kp0.publicKey
+    sk0 저장 (로컬)
+
+Round 1: Agent 1
+    kp1 = cc.MultipartyKeyGen(pk_chain)
+    pk_chain = kp1.publicKey
+    sk1 저장 (로컬)
+
+Round 2: Agent 2
+    kp2 = cc.MultipartyKeyGen(pk_chain)
+    pk_chain = kp2.publicKey
+    sk2 저장 (로컬)
+
+Round 3: Agent 3
+    kp3 = cc.MultipartyKeyGen(pk_chain)
+    pk_chain = kp3.publicKey
+    sk3 저장 (로컬)
+
+Round 4: Agent 4
+    kp4 = cc.MultipartyKeyGen(pk_chain)
+    pk_joint = kp4.publicKey  ← 최종 공동 공개키
+    sk4 저장 (로컬)
 ```
 
-### Important: TenSEAL Installation
+**보안 포인트**: 각 참가자는 자신의 비밀키(sk_i)만 알고, 완전한 비밀키는 누구도 알 수 없습니다.
 
-TenSEAL may require compilation. If you encounter issues:
-
-```bash
-# Install build dependencies (Ubuntu/Debian)
-sudo apt-get install build-essential cmake
-
-# Or use pre-built wheel (if available for your platform)
-pip install tenseal --find-links https://github.com/OpenMined/TenSEAL/releases
-```
-
-## 🎯 How to Run
-
-### Step 1: Start the Agent Lobby (Terminal 1)
-
-```bash
-cd agent
-python lobby.py
-```
-
-This starts the spawner server on port 8000. It waits for spawn requests.
-
-### Step 2: Run the Game (Terminal 2)
-
-```bash
-cd human
-python main.py
-```
-
-You'll be prompted for:
-1. **OpenAI API Key**: Your API key for AI agents
-2. **Number of AI Agents**: Choose 3-9 AI opponents
-
-The system will:
-1. Spawn AI agents via the lobby
-2. Create homomorphic encryption context
-3. Distribute encrypted roles
-4. Start the game loop
-
-### Step 3: Play!
-
-- **Night Phase**: You'll be prompted to choose a target (if your role allows)
-- **Day Phase**: Discussion (press Enter to continue)
-- **Vote Phase**: Choose who to eliminate
-
-## 🔬 Cryptographic Operations
-
-### Night Phase Computation
+### 3단계: 역할 암호화
 
 ```python
-# All operations done on encrypted data
+# Host가 역할 셔플 후 암호화
+roles = ["citizen", "mafia", "doctor", "police"]
+random.shuffle(roles)
+
+for player_idx, role in enumerate(roles):
+    role_vector = [0, 0, 0, 0]  # [citizen, mafia, doctor, police]
+    role_vector[ROLE_ENCODING[role]] = 1
+
+    encrypted_role = cc.Encrypt(pk_joint, role_vector)
+```
+
+### 4단계: Threshold 복호화 
+
+```
+각 플레이어의 암호화된 역할에 대해:
+
+    Human (Lead): partial_0 = cc.MultipartyDecryptLead(ciphertext, sk0)
+        ↓
+    Agent 1:      partial_1 = cc.MultipartyDecryptMain(ciphertext, sk1)
+        ↓
+    Agent 2:      partial_2 = cc.MultipartyDecryptMain(ciphertext, sk2)
+        ↓
+    Agent 3:      partial_3 = cc.MultipartyDecryptMain(ciphertext, sk3)
+        ↓
+    Agent 4:      partial_4 = cc.MultipartyDecryptMain(ciphertext, sk4)
+        ↓
+    Fusion:       plaintext = cc.MultipartyDecryptFusion([partial_0..4])
+        ↓
+    역할 확정:     role = decode(plaintext)  # [0,1,0,0,0] → "mafia"
+```
+
+## 디렉토리 구조
+
+```
+maFHEa/
+├── mafia_launcher.py     # 게임 런처 (로비 서버 + 게임 시작)
+├── README.md
+│
+├── human/                # Human Host (게임 진행자)
+│   ├── main.py          # 메인 게임 로직, DKG 조율
+│   ├── config.py        # 게임/네트워크/암호화 설정
+│   ├── requirements.txt
+│   └── start_game.sh
+│
+└── agent/                # AI Agent (플레이어)
+    ├── lobby.py         # Agent 생성 서버
+    ├── player.py        # Agent 플레이어 로직
+    ├── security.py      # OpenFHE 암호화 모듈
+    ├── models.py        # Pydantic 모델
+    └── venv/            # Python 가상환경
+```
+
+## 설치 및 실행
+
+### 요구사항
+
+- Python 3.10+
+- Ubuntu 22.04/24.04 (OpenFHE 지원)
+- OpenAI API Key
+
+### 설치
+
+```bash
+# Human 환경
+cd human
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+
+# Agent 환경
+cd ../agent
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+```
+
+### 실행
+
+```bash
+# .env 파일에 API 키 설정
+echo "OPENAI_API_KEY=your-key-here" > human/.env
+
+# 게임 실행
+python3 mafia_launcher.py
+```
+
+## 암호화 파라미터
+
+```python
+CRYPTO_CONFIG = {
+    "scheme": "BFVrns",              # BFV with RNS
+    "plaintext_modulus": 65537,      # 충분히 큰 소수
+    "multiplicative_depth": 2,        # 곱셈 깊이
+    "multiparty_mode": "NOISE_FLOODING_MULTIPARTY"  # 가장 안전한 모드
+}
+```
+
+### NOISE_FLOODING_MULTIPARTY
+
+부분 복호화 시 노이즈를 추가하여 비밀키 정보 누출을 방지합니다. 이는 악의적인 참가자가 부분 복호화 결과를 분석해도 다른 참가자의 비밀키를 추론할 수 없게 합니다.
+
+## API 엔드포인트
+
+### Agent (player.py)
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/health` | GET | 헬스 체크 |
+| `/init` | POST | 게임 초기화 |
+| `/dkg_setup` | POST | CryptoContext 수신 |
+| `/dkg_round` | POST | DKG 라운드 참여 (키 생성) |
+| `/partial_decrypt` | POST | 부분 복호화 수행 |
+| `/role_assignment` | POST | 역할 수신 |
+| `/request_action` | POST | 행동 요청 (투표, 능력 사용) |
+
+### Lobby (lobby.py)
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/health` | GET | 헬스 체크 |
+| `/spawn_agent` | POST | 새 Agent 생성 |
+| `/agent/{id}` | DELETE | Agent 종료 |
+
+## 게임 내 암호화 연산
+
+### Night Phase 계산
+
+```python
+# 모든 연산은 암호화된 상태로 수행
 Enc(Net_Attack) = Sum(Enc(Mafia_Action_i))
 Enc(Net_Heal) = Sum(Enc(Doctor_Action_i))
 Enc(Is_Killed) = Enc(Net_Attack) * (1 - Enc(Net_Heal))
 
-# ONLY the final result is decrypted
+# 최종 결과만 복호화
 Killed = Decrypt(Enc(Is_Killed))
 ```
 
-### Police Investigation
+### 경찰 조사
 
 ```python
-# Dot product on encrypted data
-Enc(Target_Query) = [0, 0, 1, 0, 0]  # One-hot vector
-Enc(Role_Vector) = [0, 1, 0, 1, 0]    # 1=Mafia, 0=Other
+# 암호화 상태로 내적 연산
+Enc(Target_Query) = [0, 0, 1, 0, 0]  # 원-핫 벡터
+Enc(Role_Vector) = [0, 1, 0, 1, 0]    # 1=마피아, 0=기타
 
 Enc(Result) = Enc(Target_Query) ⊙ Enc(Role_Vector)
 Is_Mafia = Decrypt(Enc(Result))
 ```
 
-### Traffic Analysis Defense
+### 트래픽 분석 방어
 
 ```python
-# EVERY player sends data every turn
+# 모든 플레이어가 매 턴 데이터 전송
 if can_act:
-    send(Encrypt([0, 0, 1, 0]))  # Real action
+    send(Encrypt([0, 0, 1, 0]))  # 실제 행동
 else:
-    send(Encrypt([0, 0, 0, 0]))  # Dummy packet
+    send(Encrypt([0, 0, 0, 0]))  # 더미 패킷
 
-# Network observer CANNOT distinguish roles
+# 네트워크 관찰자는 역할 구분 불가
 ```
 
-## 🛠️ Technical Implementation
+## 보안 분석
 
-### Key Components
+### 안전한 부분
 
-1. **security.py**: Core cryptographic functions
-   - `create_tenseal_context()`: Initialize BFV context
-   - `create_one_hot_vector()`: Encrypt target selection
-   - `create_zero_vector()`: Generate dummy traffic
-   - `aggregate_encrypted_vectors()`: Homomorphic addition
-   - `compute_killed_vector()`: Homomorphic multiplication
-
-2. **player.py**: AI Agent
-   - Uses OpenAI GPT-4 for decision-making
-   - Maintains conversation thread
-   - Implements `execute_night_action()` tool
-   - Autonomous target selection
-
-3. **main.py**: Game Engine
-   - Manages game state machine
-   - Collects encrypted actions
-   - Performs blind aggregation
-   - Decrypts only final results
-
-## 🔒 Security Guarantees
-
-### What the Host CANNOT See
-- ❌ Individual player actions
-- ❌ Who attacked whom
-- ❌ Who healed whom
-- ❌ Specific votes before aggregation
-
-### What the Host CAN See
-- ✅ Aggregated results (who died)
-- ✅ Vote counts (after aggregation)
-- ✅ Game state (alive/dead players)
+| 기능 | 보안 메커니즘 |
+|------|--------------|
+| 역할 배분 | Threshold 복호화 (n-of-n) |
+| 투표 | 개별 투표 암호화, 합산 결과만 복호화 |
+| 마피아 공격 | 암호화된 타겟, 합산 결과만 공개 |
+| 의사 치료 | 암호화된 선택, 결과만 공개 |
+| 경찰 조사 | 암호화된 조사, 개인 결과만 복호화 |
 
 ### Threat Model
-- **Honest-but-Curious Server**: The host follows the protocol but might try to extract information
-- **Network Observer**: Cannot infer roles from traffic patterns (Uniform Action Protocol)
-- **Malicious Players**: Cannot forge or tamper with encrypted data without detection
 
-## 🧪 Testing
+| 공격자 유형 | 보호 수준 |
+|------------|-----------|
+| Honest-but-Curious Host | 개별 행동 알 수 없음 |
+| Network Observer | 트래픽 패턴으로 역할 추론 불가 |
+| Malicious Player | 암호문 위조/변조 불가 |
 
-### Manual Test
-```bash
-# Terminal 1
-cd agent && python lobby.py
+### 주의 사항
 
-# Terminal 2
-cd human && python main.py
-# Enter test API key and spawn 3 agents
-```
+- 게임 진행 패턴 분석으로 역할 추론 가능 (메타 정보)
+- n-of-n 스킴이므로 한 명이라도 불참하면 복호화 불가
 
-### Security Test
-Check that all players send data:
+## 역할 인코딩
+
 ```python
-# In main.py, add logging:
-print(f"[DEBUG] Received {len(encrypted_actions)} encrypted packets")
-# Should always equal num_players
+ROLE_ENCODING = {
+    "citizen": 0,
+    "mafia": 1,
+    "doctor": 2,
+    "police": 3
+}
+
+# 원-핫 벡터로 표현
+# citizen = [1, 0, 0, 0]
+# mafia   = [0, 1, 0, 0]
+# doctor  = [0, 0, 1, 0]
+# police  = [0, 0, 0, 1]
 ```
 
-## 📊 Game Configuration
+## 게임 설정
 
-Edit `human/config.py`:
+`human/config.py` 수정:
 
 ```python
 GAME_CONFIG = {
@@ -250,64 +298,52 @@ GAME_CONFIG = {
     "max_players": 10,
     "role_distribution": {
         4: {"mafia": 1, "doctor": 1, "police": 1, "citizen": 1},
-        # ... customize role ratios
+        5: {"mafia": 1, "doctor": 1, "police": 1, "citizen": 2},
+        # ...
     },
-    "night_phase_timeout": 60,  # seconds
+    "night_phase_timeout": 60,
     "vote_phase_timeout": 60,
 }
 ```
 
-## 🐛 Troubleshooting
+## 트러블슈팅
 
-### TenSEAL Installation Fails
+### OpenFHE 설치 실패
+
 ```bash
-# Try building from source
-git clone https://github.com/OpenMined/TenSEAL.git
-cd TenSEAL
-pip install .
+# Ubuntu 22.04/24.04에서 pip로 설치
+pip install openfhe
+
+# 설치 확인
+python -c "import openfhe; print(openfhe.__version__)"
 ```
 
-### Agent Connection Timeout
-- Increase `connection_timeout` in `config.py`
-- Check firewall settings for localhost connections
+### Agent 연결 타임아웃
 
-### OpenAI Rate Limits
-- Use smaller number of agents
-- Add delays between API calls in `player.py`
+- `config.py`의 `connection_timeout` 증가
+- 로컬호스트 방화벽 설정 확인
 
-## 📚 References
+### OpenAI Rate Limit
 
-- **TenSEAL**: https://github.com/OpenMined/TenSEAL
-- **BFV Scheme**: Fan & Vercauteren (2012) - Somewhat Practical Fully Homomorphic Encryption
-- **OpenAI Agents**: https://platform.openai.com/docs/guides/agents
-- **Mafia Game**: https://en.wikipedia.org/wiki/Mafia_(party_game)
+- Agent 수 감소
+- `player.py`에서 API 호출 간 딜레이 추가
 
-## 🎓 Learning Objectives
+## 라이선스
 
-This project demonstrates:
-1. **Secure Multi-Party Computation (SMPC)** in practice
-2. **Homomorphic Encryption** for blind computation
-3. **Traffic Analysis Resistance** via uniform protocols
-4. **AI Agent Orchestration** with stateful LLMs
-5. **P2P Game Architecture** with cryptographic security
+MIT License
 
-## 📜 License
+## 참고 자료
 
-MIT License - Educational purposes only
-
-## 🙏 Acknowledgments
-
-Built with:
-- TenSEAL (OpenMined Foundation)
-- OpenAI GPT-4
-- FastAPI
-- Python asyncio
+- [OpenFHE Documentation](https://openfhe-development.readthedocs.io/)
+- [Threshold FHE Tutorial](https://openfhe-development.readthedocs.io/en/latest/sphinx_rsts/intro/tutorials/threshold.html)
+- [BFV Scheme Paper](https://eprint.iacr.org/2012/144.pdf)
+- [Mafia Game](https://en.wikipedia.org/wiki/Mafia_(party_game))
 
 ---
 
-**Security Notice**: This is an educational implementation. For production use, add:
-- Formal security audit
-- Network layer encryption (TLS)
-- Authentication & authorization
+**보안 공지**: 이 구현은 교육 목적입니다. 프로덕션 사용 시 추가 필요:
+- 정식 보안 감사
+- 네트워크 계층 암호화 (TLS)
+- 인증 및 권한 관리
 - Byzantine fault tolerance
-- Verifiable computation proofs
+- 검증 가능한 연산 증명

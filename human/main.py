@@ -78,53 +78,84 @@ class GameEngine:
         """
         Execute Distributed Key Generation protocol.
 
-        1. Create crypto context and send to all agents
-        2. Human (Lead) generates initial keypair
-        3. Each agent joins DKG sequentially
-        4. Final joint public key is established
+        DKG Flow:
+        ┌─────────────────────────────────────────────────────────────┐
+        │  Human (Lead)  →  Agent1  →  Agent2  →  ...  →  Agent_n    │
+        │     pk_0            pk_1       pk_2            pk_joint    │
+        └─────────────────────────────────────────────────────────────┘
+
+        Each party:
+        1. Receives previous party's public key
+        2. Generates their own keypair using MultipartyKeyGen
+        3. Stores their secret key locally (NEVER shared)
+        4. Passes their public key to next party
+
+        Final result: Joint public key that requires ALL parties to decrypt
         """
         print("\n" + "="*60)
         print("DISTRIBUTED KEY GENERATION (DKG)")
         print("="*60)
+        print(f"[DKG] Protocol: {self.num_players}-of-{self.num_players} threshold scheme")
+        print(f"[DKG] All {self.num_players} parties must cooperate to decrypt")
+        print("-"*60)
 
         # Step 1: Create crypto context
-        print("[DKG] Creating threshold FHE context...")
+        print("\n[Step 1] Creating threshold FHE context...")
+        print("         - Scheme: BFVrns (Ring-LWE based)")
+        print("         - Mode: NOISE_FLOODING_MULTIPARTY (most secure)")
         self.cc = create_openfhe_context(self.num_players)
         cc_b64 = serialize_crypto_context(self.cc)
+        print(f"         - Context size: {len(cc_b64)} bytes (base64)")
 
         # Step 2: Send context to all agents
-        print("[DKG] Distributing crypto context to all agents...")
+        print("\n[Step 2] Distributing crypto context to all agents...")
         async with httpx.AsyncClient(timeout=NETWORK_CONFIG["connection_timeout"]) as client:
             tasks = []
             for i, address in enumerate(ai_addresses):
                 tasks.append(self._send_dkg_setup(client, address, cc_b64, i + 1))
             await asyncio.gather(*tasks, return_exceptions=True)
+        print("         - All agents received crypto context")
 
         # Step 3: Human (Player 0) generates lead key
-        print("[DKG] Human (Lead) generating initial keypair...")
+        print("\n[Step 3] Human (Lead Party) generating initial keypair...")
+        print("         - Round 1: cc.KeyGen()")
         self.keypair = dkg_keygen_lead(self.cc)
         current_pk_b64 = serialize_public_key(self.cc, self.keypair.publicKey)
-        print("[DKG] Human key generated")
+        print(f"         - Public key (pk_0) size: {len(current_pk_b64)} bytes")
+        print("         - Secret key (sk_0) stored locally [NEVER SHARED]")
 
         # Step 4: Each agent joins sequentially
+        print("\n[Step 4] Sequential key chain building...")
+        print("         Human(pk_0) → Agent1(pk_1) → Agent2(pk_2) → ...")
         async with httpx.AsyncClient(timeout=NETWORK_CONFIG["connection_timeout"]) as client:
             for i, address in enumerate(ai_addresses):
-                print(f"[DKG] Agent {i+1} joining...")
+                round_num = i + 2
+                print(f"\n         Round {round_num}: Agent {i+1} joining...")
+                print(f"         - Input: pk_{i} (previous public key)")
+                print(f"         - Operation: cc.MultipartyKeyGen(pk_{i})")
                 response = await client.post(
                     f"{address}/dkg_round",
                     json={
-                        "round_number": i + 2,  # Human is round 1
+                        "round_number": round_num,
                         "previous_public_key": current_pk_b64
                     }
                 )
                 response.raise_for_status()
                 data = response.json()
                 current_pk_b64 = data["public_key"]
-                print(f"[DKG] Agent {i+1} joined successfully")
+                print(f"         - Output: pk_{i+1} (updated joint public key)")
+                print(f"         - Agent {i+1} stores sk_{i+1} locally [NEVER SHARED]")
 
         # Step 5: Store final joint public key
+        print("\n[Step 5] Finalizing joint public key...")
         self.joint_public_key = deserialize_public_key(self.cc, current_pk_b64)
-        print("[DKG] Joint public key established!")
+        print(f"         - Final pk_joint = pk_{self.num_players-1}")
+        print(f"         - Size: {len(current_pk_b64)} bytes")
+        print("\n" + "="*60)
+        print("DKG COMPLETE!")
+        print(f"  - Joint public key established")
+        print(f"  - {self.num_players} parties each hold a secret key share")
+        print(f"  - Decryption requires ALL {self.num_players} parties")
         print("="*60 + "\n")
 
     async def _send_dkg_setup(self, client: httpx.AsyncClient, address: str, cc_b64: str, player_index: int):
@@ -148,41 +179,66 @@ class GameEngine:
         """
         Assign roles using threshold decryption.
 
-        1. Shuffle roles and encrypt with joint public key
-        2. Collect partial decryptions from all parties
-        3. Fuse to get final plaintext roles
-        4. Assign roles to players
+        Threshold Decryption Flow:
+        ┌─────────────────────────────────────────────────────────────┐
+        │  Encrypted Roles (with pk_joint)                           │
+        │       ↓                                                     │
+        │  Human: Dec_sk0(ct) → partial_0                            │
+        │  Agent1: Dec_sk1(ct) → partial_1                           │
+        │  Agent2: Dec_sk2(ct) → partial_2                           │
+        │  ...                                                        │
+        │       ↓                                                     │
+        │  Fusion([partial_0, partial_1, ...]) → plaintext roles     │
+        └─────────────────────────────────────────────────────────────┘
+
+        Security: No single party can decrypt alone!
         """
         print("\n" + "="*60)
         print("THRESHOLD ROLE ASSIGNMENT")
         print("="*60)
+        print("[Roles] Security: Encrypted roles require ALL parties to decrypt")
+        print("-"*60)
 
         # Step 1: Generate and shuffle roles
+        print("\n[Step 1] Generating role distribution...")
         role_dist = GAME_CONFIG["role_distribution"][self.num_players]
         roles = []
         for role, count in role_dist.items():
             roles.extend([role] * count)
+        print(f"         - Distribution: {role_dist}")
+        print(f"         - Before shuffle: {roles}")
         random.shuffle(roles)
+        print(f"         - After shuffle: {roles}")
 
         # Step 2: Encode and encrypt roles
-        print("[Roles] Encoding and encrypting shuffled roles...")
+        print("\n[Step 2] Encoding and encrypting roles...")
+        print("         - Encoding: citizen=0, mafia=1, doctor=2, police=3")
         encoded_roles = encode_roles(roles)
+        print(f"         - Encoded vector: {encoded_roles}")
         plaintext = self.cc.MakePackedPlaintext(encoded_roles)
         encrypted_roles = self.cc.Encrypt(self.joint_public_key, plaintext)
         encrypted_roles_b64 = serialize_ciphertext(self.cc, encrypted_roles)
-        print(f"[Roles] Encrypted role vector: {encoded_roles}")
+        print(f"         - Ciphertext size: {len(encrypted_roles_b64)} bytes")
+        print("         - Encrypted with joint public key (pk_joint)")
 
         # Step 3: Threshold decryption - Human (Lead) first
-        print("[Roles] Starting threshold decryption...")
-        print("[Roles] Human partial decryption (Lead)...")
+        print("\n[Step 3] Threshold decryption (requires all parties)...")
+        print("         ┌─────────────────────────────────────────┐")
+        print("         │  Ciphertext → [All parties] → Plaintext │")
+        print("         └─────────────────────────────────────────┘")
         partial_results = []
+
+        print("\n         Party 0 (Human - Lead):")
+        print("         - Operation: cc.MultipartyDecryptLead(ct, sk_0)")
         human_partial = partial_decrypt_lead(self.cc, encrypted_roles, self.keypair.secretKey)
         partial_results.append(human_partial)
+        print("         - Generated partial_0 ✓")
 
         # Step 4: Collect partial decryptions from agents
         async with httpx.AsyncClient(timeout=NETWORK_CONFIG["connection_timeout"]) as client:
             for i, address in enumerate(ai_addresses):
-                print(f"[Roles] Agent {i+1} partial decryption...")
+                print(f"\n         Party {i+1} (Agent {i+1}):")
+                print(f"         - Operation: cc.MultipartyDecryptMain(ct, sk_{i+1})")
                 response = await client.post(
                     f"{address}/partial_decrypt",
                     json={
@@ -194,13 +250,22 @@ class GameEngine:
                 data = response.json()
                 partial_ct = deserialize_ciphertext(self.cc, data["partial_ciphertext"])
                 partial_results.append(partial_ct)
+                print(f"         - Generated partial_{i+1} ✓")
 
         # Step 5: Fusion - combine all partial decryptions
-        print("[Roles] Fusing partial decryptions...")
+        print("\n[Step 4] Fusing partial decryptions...")
+        print(f"         - Input: [{', '.join(f'partial_{i}' for i in range(self.num_players))}]")
+        print("         - Operation: cc.MultipartyDecryptFusion(partials)")
         final_plaintext = fusion_decrypt(self.cc, partial_results)
         decrypted_values = list(final_plaintext.GetPackedValue()[:self.num_players])
         decrypted_roles = decode_roles(decrypted_values)
-        print(f"[Roles] Decrypted roles: {decrypted_roles}")
+        print(f"         - Decrypted vector: {decrypted_values}")
+        print(f"         - Decoded roles: {decrypted_roles}")
+
+        print("\n" + "="*60)
+        print("ROLE ASSIGNMENT COMPLETE!")
+        print(f"  Roles decrypted via {self.num_players}-party threshold scheme")
+        print("="*60)
 
         # Step 6: Assign roles to players
         # Human player
