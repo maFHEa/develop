@@ -117,15 +117,15 @@ class MafiaGameApp(App):
             self.exit()
             return
         
-        # Setup game
-        loading_screen.add_status("Setting up game...", "yellow")
+        # Setup game with DKG
+        loading_screen.add_status("Running DKG protocol...", "yellow")
         await asyncio.sleep(0.3)
-        self.game_engine.setup_game(
+        await self.game_engine.setup_game(
             num_ai_agents=len(agent_addresses),
             ai_addresses=agent_addresses,
             game_id=game_id
         )
-        loading_screen.add_status("✓ Game setup complete", "green")
+        loading_screen.add_status("✓ DKG and role assignment complete", "green")
         
         # Initialize agents
         loading_screen.add_status("Initializing agents with roles...", "yellow")
@@ -134,11 +134,16 @@ class MafiaGameApp(App):
         loading_screen.add_status("✓ All agents initialized", "green")
         
         await asyncio.sleep(1)
-        self.app.pop_screen()
-        
+        self.pop_screen()
+
         # Start game loop
         await self._run_game()
     
+    def safe_pop_screen(self) -> None:
+        """Safely pop screen if there's more than one on the stack"""
+        if len(self._screen_stack) > 1:
+            self.pop_screen()
+
     async def _run_game(self) -> None:
         """Run the game loop with TUI"""
         try:
@@ -147,32 +152,32 @@ class MafiaGameApp(App):
                 # Night phase - use TUI
                 human_player = self.game_engine.players[self.game_engine.human_player_index]
                 survivors = self.game_engine.get_survivors()
-                
+
                 # Create and show night screen
                 night_screen = NightScreen(
-                    self.game_engine.day_number,
+                    self.game_engine.day_number + 1,  # day_number increments in execute_night_phase
                     human_player.alive,
                     human_player.role,
                     survivors
                 )
-                
+
                 # Push screen and wait for action submission
                 self.push_screen(night_screen)
-                
+
                 # Wait for human to submit action if needed
                 while not night_screen.action_submitted:
                     await asyncio.sleep(0.5)
-                
+
                 # Store human's target before executing night phase
                 self.game_engine.human_night_target = night_screen.selected_target
-                
+
                 night_screen.add_message("⏳ Waiting for all players...", "yellow")
-                
+
                 # Execute night phase in background
                 await self.game_engine.execute_night_phase()
                 night_screen.add_message("✓ All actions collected", "green")
                 await asyncio.sleep(1)
-                
+
                 # Show results
                 if self.game_engine.last_killed:
                     for victim_index in self.game_engine.last_killed:
@@ -182,13 +187,11 @@ class MafiaGameApp(App):
                 else:
                     night_screen.add_message("✓ No one was killed", "green")
                     await asyncio.sleep(0.5)
-                
-                # Auto-proceed after showing results (3 seconds delay)
+
+                # Auto-proceed after showing results
                 night_screen.add_message("\nProceeding to day phase...", "cyan")
-                await asyncio.sleep(3)
-                night_screen.dismiss_event.set()
-                await night_screen.dismiss_event.wait()
-                self.pop_screen()
+                await asyncio.sleep(2)
+                self.safe_pop_screen()
                 
                 winner = self.game_engine.check_win_condition()
                 if winner:
@@ -210,8 +213,8 @@ class MafiaGameApp(App):
                 # Wait for user to proceed or quit (Ctrl+D)
                 while not chat_screen.should_proceed:
                     await asyncio.sleep(0.5)
-                
-                self.pop_screen()
+
+                self.safe_pop_screen()
                 
                 await self.game_engine.stop_agent_chat_phase()
                 
@@ -254,10 +257,8 @@ class MafiaGameApp(App):
                 else:
                     vote_screen.add_message("✓ No one was eliminated", "yellow")
                 
-                await asyncio.sleep(3)
-                vote_screen.dismiss_event.set()
-                await vote_screen.dismiss_event.wait()
-                self.pop_screen()
+                await asyncio.sleep(2)
+                self.safe_pop_screen()
                 
                 winner = self.game_engine.check_win_condition()
                 if winner:
