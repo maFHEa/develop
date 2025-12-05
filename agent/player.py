@@ -842,8 +842,18 @@ async def receive_chat_message(request: dict):
     message = request.get("message")
     msg_id = request.get("message_id")
     
+    # Add to chat history so agent can read it
+    state.chat_history.add_message(
+        player_index=sender_index,
+        phase="chat",  # Chat messages happen during day/chat phase
+        message=message,
+        turn=state.current_turn
+    )
+    
     # Agent can use this to update their understanding of the game
     logger.info(f"[Agent] Received chat from player {sender_index}: {message}")
+    logger.info(f"[Agent] Chat history now has {len(state.chat_history.messages)} messages")
+    
     return {"status": "ok"}
 
 

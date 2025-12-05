@@ -8,7 +8,7 @@ from typing import List, Optional
 import httpx
 
 from service.dkg.coordinator import DKGCoordinator
-from crypto_operations import CryptoOperations
+from service.crypto_ops import CryptoOperations
 from game_phases import GamePhases
 from game_logger import GameLogger
 from config import NETWORK_CONFIG
