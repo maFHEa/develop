@@ -97,9 +97,64 @@ class AgentState:
         self.my_encrypted_role: Optional[str] = None  # For blind role protocol
         self.encrypted_role_vector: Optional[str] = None  # For police investigation
         self.all_encrypted_roles: List[str] = []  # All players' encrypted roles
+        self.last_investigation_result: Optional[dict] = None  # Police investigation result
 
 state = AgentState()
 app = FastAPI(title="Mafia AI Agent")
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+async def send_dummy_investigation_packets():
+    """
+    경찰이 아닌 플레이어가 네트워크 obfuscation을 위해 dummy packet 전송
+    2-5초 랜덤 딜레이 후 다른 플레이어들에게 investigate_parallel 요청
+    """
+    import random
+    
+    # 2-5초 랜덤 딜레이
+    delay = random.uniform(2.0, 5.0)
+    await asyncio.sleep(delay)
+    
+    logger.info(f"🕵️ Sending dummy investigation packets (role: {state.role})")
+    
+    # Dummy 0 벡터 생성
+    dummy_ciphertext = serialize_ciphertext(
+        state.cc, 
+        create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+    )
+    
+    # 다른 플레이어들에게 dummy packet 전송
+    tasks = []
+    for i in range(state.num_players):
+        if i != state.player_index:
+            # 주소 추정 (Human=9000, Agent 1=port+1000, etc)
+            if i == 0:
+                port = 9000  # Human player
+            else:
+                port = 8764 + i  # Agents start from different ports
+            
+            player_address = f"http://localhost:{port}"
+            tasks.append(_send_single_dummy_packet(player_address, dummy_ciphertext))
+    
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    
+    logger.info(f"🕵️ Dummy packets sent to {len(tasks)} players")
+
+
+async def _send_single_dummy_packet(address: str, ciphertext_b64: str):
+    """Helper to send single dummy investigate packet"""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{address}/investigate_parallel",
+                json={"ciphertext": ciphertext_b64}
+            )
+    except Exception:
+        pass  # Ignore errors silently
 
 
 # ============================================================================
@@ -409,6 +464,85 @@ async def partial_decrypt(request: PartialDecryptRequest):
     except Exception as e:
         logger.error(f"❌ Partial decrypt error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/investigate_parallel")
+async def investigate_parallel(request: dict):
+    """병렬 조사: 암호문을 받아서 partial decrypt만 수행"""
+    try:
+        if state.cc is None or state.keypair is None:
+            raise ValueError("Keys not initialized")
+        
+        ciphertext_b64 = request["ciphertext"]
+        ciphertext = deserialize_ciphertext(state.cc, ciphertext_b64)
+        
+        # Partial decrypt
+        partial = partial_decrypt_main(state.cc, ciphertext, state.keypair.secretKey)
+        partial_b64 = serialize_ciphertext(state.cc, partial)
+        
+        return {"partial_result": partial_b64}
+        
+    except Exception as e:
+        logger.error(f"❌ Parallel investigation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/investigate_parallel")
+async def investigate_parallel(request: dict):
+    """병렬 조사: 암호문을 받아서 partial decrypt만 수행"""
+    try:
+        if state.cc is None or state.keypair is None:
+            raise ValueError("Keys not initialized")
+        
+        ciphertext_b64 = request["ciphertext"]
+        ciphertext = deserialize_ciphertext(state.cc, ciphertext_b64)
+        
+        # Partial decrypt
+        partial = partial_decrypt_main(state.cc, ciphertext, state.keypair.secretKey)
+        partial_b64 = serialize_ciphertext(state.cc, partial)
+        
+        return {"partial_result": partial_b64}
+        
+    except Exception as e:
+        logger.error(f"❌ Parallel investigation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/store_investigation_result")
+async def store_investigation_result(request: dict):
+    """서버로부터 조사 결과를 받아서 저장"""
+    if state.role != "police":
+        raise HTTPException(status_code=403, detail="Only police can receive investigation results")
+    
+    state.last_investigation_result = {
+        "target": request["target"],
+        "is_mafia": request["is_mafia"]
+    }
+    
+    # Log the result
+    target = request["target"]
+    is_mafia = request["is_mafia"]
+    logger.info("=" * 60)
+    logger.info("🔍 POLICE INVESTIGATION RESULT")
+    logger.info(f"   Player {target} is: {'🎭 MAFIA' if is_mafia else '✅ NOT MAFIA'}")
+    logger.info("=" * 60)
+    
+    return {"success": True}
+
+
+@app.get("/investigation_result")
+async def get_investigation_result():
+    """경찰이 자신의 조사 결과를 조회 (tool에서 사용)"""
+    if state.role != "police":
+        raise HTTPException(status_code=403, detail="Only police can check investigation results")
+    
+    if state.last_investigation_result is None:
+        return {"has_result": False}
+    
+    return {
+        "has_result": True,
+        "result": state.last_investigation_result
+    }
 
 
 @app.post("/relay_decrypt")
@@ -919,6 +1053,10 @@ Do it NOW - no more analysis needed!"""
         attack_b64 = serialize_ciphertext(state.cc, attack_vec)
         heal_b64 = serialize_ciphertext(state.cc, heal_vec)
         investigate_b64 = serialize_ciphertext(state.cc, investigate_vec)
+        
+        # Network obfuscation: 경찰이 아닌 경우도 dummy investigation packets 전송
+        if request.phase == "night" and state.role != "police":
+            asyncio.create_task(send_dummy_investigation_packets())
 
         return ActionResponse(
             attack_vector=attack_b64,
@@ -930,6 +1068,21 @@ Do it NOW - no more analysis needed!"""
     except Exception as e:
         logger.error(f"Error in /request_action: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/investigation_result")
+async def get_investigation_result():
+    """경찰이 자신의 조사 결과를 조회 (tool에서 사용)"""
+    if state.role != "police":
+        raise HTTPException(status_code=403, detail="Only police can check investigation results")
+    
+    if state.last_investigation_result is None:
+        return {"has_result": False}
+    
+    return {
+        "has_result": True,
+        "result": state.last_investigation_result
+    }
 
 
 @app.get("/health")

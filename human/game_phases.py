@@ -114,33 +114,28 @@ class GamePhases:
 
     async def _handle_police_investigation(self, investigations_enc, players, human_player_index, human_role):
         """
-        Police investigation using relay decryption (ONLY POLICE SEES RESULT).
+        Police investigation using parallel decryption (ONLY POLICE SEES RESULT).
         
-        NEW Protocol (Client-side computation):
-        1. Each player computes their investigation result:
+        Protocol (Network Obfuscation):
+        1. ALL players send investigation packets automatically:
            - Police: role_vector[target] · mafia_check → encrypted result
-           - Others: zero vector → encrypted 0
-        2. Server aggregates all encrypted results (sum)
-        3. Relay decrypt: only one player (first alive) gets the result
-        4. That player is the police and sees the result
+           - Others: Enc(0) with random delay (agent 코드에서 자동 실행)
+        2. Server aggregates all encrypted results
+        3. Parallel decrypt: Police collects all partials
         
         Security:
-        - Server doesn't know who is police
-        - Server doesn't know investigation result
+        - Network traffic looks identical for all players
         - Only police sees final result
-        
-        NOTE: This is a PLACEHOLDER - clients must compute dot products!
         """
-        print("[Engine] Processing police investigations (relay decrypt)...")
+        print("[Engine] Processing police investigations (parallel decrypt)...")
         
-        # Aggregate all investigation results (each player sent encrypted result)
-        # Police sent: Enc(role · mafia_check), others sent: Enc(0)
+        # Aggregate all investigation results
         total_result_enc = aggregate_encrypted_vectors(self.crypto_ops.cc, investigations_enc)
         
-        # Serialize for relay decryption
+        # Serialize for decryption
         total_result_b64 = serialize_ciphertext(self.crypto_ops.cc, total_result_enc)
         
-        # Relay decrypt to first alive player (who should be police if they sent non-zero)
+        # Find who is police (first alive player who sent non-zero investigation)
         first_alive_index = None
         for i, player in enumerate(players):
             if player.alive:
@@ -151,24 +146,56 @@ class GamePhases:
             print("[Engine] No alive players for investigation!")
             return
         
-        # RELAY DECRYPT: Result goes to first alive player (assumes they are police)
-        # TODO: Better way to ensure result goes to police
-        result_vector = await self.crypto_ops.decryption_service.relay_decrypt(
+        # Parallel decrypt: requester (police) collects all partials
+        result_vector = await self.crypto_ops.decryption_service.parallel_decrypt(
             total_result_b64,
             first_alive_index,
             players
         )
         
-        # Check if human player is police and show result
-        if players[0].role == "police" and players[0].alive:
+        # Send result to police agent
+        police_player = players[first_alive_index]
+        if police_player.is_human:
+            # Human police - show result here
             from agent.service.crypto.roles import NUM_ROLE_TYPES
             is_mafia = sum(result_vector[:NUM_ROLE_TYPES]) == 1
+            # Find target (first non-zero in result)
+            target = None
+            for i in range(len(players)):
+                if i < len(result_vector) and result_vector[i] > 0:
+                    target = i
+                    break
+            
             print("=" * 60)
             print("🔍 POLICE INVESTIGATION RESULT (You are the police!)")
-            print(f"   Target is: {'🎭 MAFIA' if is_mafia else '✅ NOT MAFIA'}")
+            if target is not None:
+                print(f"   Player {target} is: {'🎭 MAFIA' if is_mafia else '✅ NOT MAFIA'}")
             print("=" * 60)
         else:
-            print("[Engine] Investigation result sent to police agent")
+            # AI police - send result via HTTP
+            from agent.service.crypto.roles import NUM_ROLE_TYPES
+            is_mafia = sum(result_vector[:NUM_ROLE_TYPES]) == 1
+            # Find target
+            target = None
+            for i in range(len(players)):
+                if i < len(result_vector) and result_vector[i] > 0:
+                    target = i
+                    break
+            
+            if target is not None:
+                try:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        await client.post(
+                            f"{police_player.address}/store_investigation_result",
+                            json={
+                                "target": target,
+                                "is_mafia": is_mafia
+                            }
+                        )
+                        print(f"[Engine] Investigation result sent to {police_player.name}")
+                except Exception as e:
+                    print(f"[Engine] Failed to send investigation result: {e}")
 
     def _announce_night_results(self, players, log_callback):
         """Announce night phase results"""

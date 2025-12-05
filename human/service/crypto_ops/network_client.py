@@ -91,6 +91,26 @@ class AgentNetworkClient:
             print(f"[Network] Error getting partial decrypt from {player.name}: {e}")
             raise
     
+    async def request_partial_investigation(
+        self,
+        player,
+        ciphertext_b64: str
+    ) -> str:
+        """병렬 조사를 위한 partial decrypt 요청"""
+        try:
+            async with httpx.AsyncClient(
+                timeout=NETWORK_CONFIG["connection_timeout"]
+            ) as client:
+                response = await client.post(
+                    f"{player.address}/investigate_parallel",
+                    json={"ciphertext": ciphertext_b64}
+                )
+                response.raise_for_status()
+                return response.json()["partial_result"]
+        except Exception as e:
+            print(f"[Network] Error in parallel investigation from {player.name}: {e}")
+            raise
+
     async def request_relay_decrypt(
         self,
         player,

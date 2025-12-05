@@ -3,6 +3,7 @@ Decryption Service - Threshold decryption operations
 """
 import sys
 import os
+import asyncio
 from typing import List
 
 # Add agent directory to path
@@ -25,6 +26,46 @@ class ThresholdDecryptionService:
         self.num_players = num_players
         self.network = AgentNetworkClient()
     
+    async def parallel_decrypt(
+        self,
+        ciphertext_b64: str,
+        requester_index: int,
+        players
+    ) -> List[int]:
+        """
+        병렬 복호화: 요청자가 모든 플레이어에게 동시에 partial decrypt 요청
+        
+        Args:
+            ciphertext_b64: 암호화된 데이터 (Base64)
+            requester_index: 요청자(발신자) 인덱스
+            players: 모든 플레이어 리스트
+        
+        Returns:
+            복호화된 벡터
+        """
+        # Deserialize ciphertext
+        ct = deserialize_ciphertext(self.cc, ciphertext_b64)
+        
+        # Requester's partial decryption
+        requester_partial = partial_decrypt_lead(self.cc, ct, self.keypair.secretKey)
+        all_partials = [requester_partial]
+        
+        # Collect partials from all other players in parallel
+        tasks = []
+        for i, player in enumerate(players):
+            if i != requester_index and not player.is_human:
+                tasks.append(self.network.request_partial_investigation(player, ciphertext_b64))
+        
+        if tasks:
+            partial_results_b64 = await asyncio.gather(*tasks)
+            for partial_b64 in partial_results_b64:
+                partial = deserialize_ciphertext(self.cc, partial_b64)
+                all_partials.append(partial)
+        
+        # Fusion decrypt
+        final_result = fusion_decrypt(self.cc, all_partials)
+        return final_result.GetPackedValue()
+
     async def relay_decrypt(
         self,
         ciphertext_b64: str,

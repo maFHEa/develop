@@ -156,7 +156,7 @@ def create_agent_tools(state, phase: str = "setup"):
     
     # 4. Night Action Tools
     @function_tool
-    def submit_night_action(
+    async def submit_night_action(
         target_index: Annotated[int, "Index of player to target (0-indexed). Use -1 to abstain. Doctor CAN target themselves for self-heal."]
     ) -> str:
         """
@@ -179,14 +179,14 @@ def create_agent_tools(state, phase: str = "setup"):
         # Police investigation: Execute immediately via relay decrypt
         if action_type == "police" and 0 <= target_index < state.num_players and target_index != state.player_index:
             try:
-                logger.info(f"🔍 Police investigating Player {target_index} via relay decrypt...")
+                logger.info(f"🔍 Police investigating Player {target_index} via parallel decrypt...")
                 
                 import httpx
                 import asyncio
                 from service.crypto.serialization import serialize_ciphertext, deserialize_ciphertext
                 from service.crypto.vector_operations import homomorphic_dot_product
                 from service.crypto.roles import NUM_ROLE_TYPES
-                from service.crypto.threshold_decryption import fusion_decrypt
+                from service.crypto.threshold_decryption import partial_decrypt_lead, fusion_decrypt
                 
                 # Get target's encrypted role
                 target_role_enc_b64 = state.all_encrypted_roles[target_index]
@@ -197,52 +197,58 @@ def create_agent_tools(state, phase: str = "setup"):
                 investigate_result_enc = homomorphic_dot_product(state.cc, target_role_enc, mafia_check_vector)
                 investigate_result_b64 = serialize_ciphertext(state.cc, investigate_result_enc)
                 
-                # Build player addresses (all players including self)
+                # Parallel decrypt: My partial + collect from all others
+                my_partial = partial_decrypt_lead(state.cc, investigate_result_enc, state.keypair.secretKey)
+                all_partials = [my_partial]
+                
+                # Collect partials from all other players in parallel
+                async def collect_partial(player_idx: int, address: str):
+                    if address is None:
+                        return None
+                    try:
+                        async with httpx.AsyncClient(timeout=10.0) as client:
+                            response = await client.post(
+                                f"{address}/investigate_parallel",
+                                json={"ciphertext": investigate_result_b64}
+                            )
+                            response.raise_for_status()
+                            return response.json()["partial_result"]
+                    except Exception as e:
+                        logger.error(f"Failed to get partial from player {player_idx}: {e}")
+                        return None
+                
+                # Build player addresses
                 player_addresses = []
                 for i in range(state.num_players):
                     if i == 0:
-                        # Human player at http://localhost:9000
                         player_addresses.append("http://localhost:9000")
+                    elif i == state.player_index:
+                        player_addresses.append(None)  # Skip self
                     else:
-                        # AI agents - we need to get their addresses from game state
-                        # For now, use the addresses we know from setup
-                        player_addresses.append(state.player_addresses[i] if hasattr(state, 'player_addresses') else None)
+                        # Get from state or estimate
+                        if hasattr(state, 'player_addresses') and state.player_addresses:
+                            player_addresses.append(state.player_addresses[i])
+                        else:
+                            # Fallback: estimate based on port
+                            player_addresses.append(f"http://localhost:{8764 + i}")
                 
-                # Start relay decrypt: send to first player (excluding self)
-                player_order = [i for i in range(state.num_players) if i != state.player_index]
+                # Collect all partials in parallel
+                tasks = []
+                for i in range(state.num_players):
+                    if i != state.player_index and player_addresses[i]:
+                        tasks.append(collect_partial(i, player_addresses[i]))
                 
-                if not player_order:
-                    raise ValueError("No other players available for relay decrypt")
+                if tasks:
+                    partial_results = await asyncio.gather(*tasks)
+                    for partial_b64 in partial_results:
+                        if partial_b64:
+                            partial = deserialize_ciphertext(state.cc, partial_b64)
+                            all_partials.append(partial)
                 
-                first_player_idx = player_order[0]
-                remaining_order = player_order[1:] + [state.player_index]  # End with self
-                
-                # Send relay decrypt request
-                async def do_relay_decrypt():
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        response = await client.post(
-                            f"{player_addresses[first_player_idx]}/relay_decrypt",
-                            json={
-                                "ciphertext": investigate_result_b64,
-                                "partial_results": [],
-                                "remaining_order": remaining_order,
-                                "player_addresses": player_addresses
-                            }
-                        )
-                        response.raise_for_status()
-                        return response.json()
-                
-                result = asyncio.run(do_relay_decrypt())
-                
-                # We should get partial_results back, do fusion
-                if "partial_results" in result:
-                    all_partials = [deserialize_ciphertext(state.cc, p) for p in result["partial_results"]]
-                    final_result = fusion_decrypt(state.cc, all_partials)
-                    decrypted_vector = final_result.GetPackedValue()
-                    is_mafia = sum(decrypted_vector[:NUM_ROLE_TYPES]) >= 1
-                else:
-                    # Fallback if we get decrypted_vector directly
-                    is_mafia = sum(result["decrypted_vector"][:NUM_ROLE_TYPES]) >= 1
+                # Fusion decrypt
+                final_result = fusion_decrypt(state.cc, all_partials)
+                decrypted_vector = final_result.GetPackedValue()
+                is_mafia = sum(decrypted_vector[:NUM_ROLE_TYPES]) >= 1
                 
                 # Record the result
                 from suspicion import PoliceNoteManager
