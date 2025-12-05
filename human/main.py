@@ -14,6 +14,10 @@ from game_logger import GameLogger
 from config import NETWORK_CONFIG
 from models import Player
 
+# Import chat history from agent directory
+sys.path.append('../agent')
+from chat import GameChatHistory
+
 
 class GameEngine:
     """Main game engine - orchestrates DKG, phases, and player management"""
@@ -27,6 +31,8 @@ class GameEngine:
         self.phase = "setup"
         self.game_log: List[str] = []
         self.chat_message_id_counter = 0
+        self.chat_history = GameChatHistory()  # Initialize chat history
+        self.last_displayed_msg_id = -1  # Track last displayed message in TUI
         
         # TUI integration: Store action from TUI
         self.pending_human_action: Optional[int] = None
@@ -97,14 +103,38 @@ class GameEngine:
         """
         Check win condition.
         
-        PROBLEM: Server doesn't know anyone's role!
-        TODO: Implement proper encrypted role aggregation
-        For now, game continues until manual stop.
+        Since we use blind protocol and don't know roles on server side,
+        we ask each alive agent if they think the game should end.
         """
         alive_count = sum(1 for p in self.players if p.alive)
         
+        # Check if human player is dead
+        human_player = self.players[self.human_player_index]
+        if not human_player.alive:
+            return "game_over"  # Human player died
+        
         if alive_count <= 1:
             return "draw"  # Only 1 or 0 players left
+        
+        # Check if only 2 players left (likely mafia vs citizen endgame)
+        if alive_count == 2:
+            # Ask agents if game should end
+            import httpx
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    for player in self.players:
+                        if not player.is_human and player.alive:
+                            try:
+                                response = await client.get(f"{player.address}/check_game_end")
+                                if response.status_code == 200:
+                                    data = response.json()
+                                    if data.get("game_should_end", False):
+                                        winner = data.get("winner", "unknown")
+                                        return winner
+                            except:
+                                pass
+            except:
+                pass
         
         return None
 
@@ -138,6 +168,13 @@ class GameEngine:
     async def broadcast_chat_message(self, sender_index: int, message: str):
         self.chat_message_id_counter += 1
         msg_id = self.chat_message_id_counter
+        
+        # Add message to chat history first so it appears in UI
+        # Parameters: player_index, phase, message, turn
+        # Chat messages always happen during "day" or "chat" phase
+        current_phase = "chat"
+        current_turn = self.game_phases.day_number if hasattr(self, 'game_phases') and self.game_phases else 1
+        self.chat_history.add_message(sender_index, current_phase, message, current_turn)
 
         async with httpx.AsyncClient(timeout=NETWORK_CONFIG["connection_timeout"]) as client:
             tasks = []

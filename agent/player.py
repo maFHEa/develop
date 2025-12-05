@@ -4,6 +4,7 @@ Uses OpenAI Agents SDK for stateful autonomous behavior with session-based memor
 Supports DKG (Distributed Key Generation) for threshold FHE
 """
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -563,13 +564,16 @@ async def request_action(request: GameUpdateRequest):
         state.pending_chat_messages = []
         state.current_phase = request.phase
 
-        # Log phase start
-        survivors_str = ", ".join(str(s) for s in request.survivors)
+        # Log phase start with RANDOMIZED survivor order to prevent bias
+        import random
+        shuffled_survivors = list(request.survivors)
+        random.shuffle(shuffled_survivors)
+        survivors_str = ", ".join(str(s) for s in shuffled_survivors)
         dead_str = ", ".join(str(d) for d in request.dead_players)
         logger.info("")
         logger.info("━" * 60)
         logger.info(f"📍 {request.phase.upper()} PHASE | Turn {state.current_turn}")
-        logger.info(f"👥 Alive: {survivors_str}")
+        logger.info(f"👥 Alive (randomized order): {survivors_str}")
         logger.info(f"💀 Dead: {dead_str}")
         logger.info(f"💬 Message: {request.message}")
         logger.info("━" * 60)
@@ -589,7 +593,6 @@ async def request_action(request: GameUpdateRequest):
         # CITIZEN OPTIMIZATION: Skip AI call during night phase
         if request.phase == "night" and state.role == "citizen":
             import random
-            import asyncio
             
             # Random delay (2-5 seconds) to avoid timing analysis
             delay = random.uniform(2.0, 5.0)
@@ -689,33 +692,58 @@ Do it NOW - no more analysis needed!"""
                     state.pending_action_target = None
                     
         elif request.phase in ["chat", "day"]:
-            # Chat/Day phase - continuous interaction for 2 minutes
+            # Chat/Day phase - continuous interaction until time runs out
             from agent_logic import create_agent_tools, create_chat_prompt
+            import time as time_module
+            
             state.agent.tools = create_agent_tools(state, phase="chat")
             
             remaining_time = request.remaining_time if request.remaining_time else 120
+            start_time = time_module.time()
+            chat_round = 0
             
-            prompt = create_chat_prompt(
-                turn=state.current_turn,
-                survivors_str=survivors_str,
-                dead_str=dead_str,
-                role=state.role,
-                message=request.message,
-                remaining_time=remaining_time
-            )
+            # Keep chatting until time runs out
+            while True:
+                chat_round += 1
+                elapsed = time_module.time() - start_time
+                time_left = max(0, remaining_time - elapsed)
+                
+                # Stop if less than 5 seconds left
+                if time_left < 5:
+                    logger.info(f"⏱️  Chat time ended - {elapsed:.1f}s elapsed")
+                    break
+                
+                prompt = create_chat_prompt(
+                    turn=state.current_turn,
+                    survivors_str=survivors_str,
+                    dead_str=dead_str,
+                    role=state.role,
+                    message=request.message,
+                    remaining_time=int(time_left)
+                )
+                
+                logger.info(f"💬 Chat round {chat_round} - {time_left:.0f}s remaining")
+                
+                try:
+                    # Shorter max_turns per round so we can loop
+                    result = await Runner.run(
+                        starting_agent=state.agent,
+                        input=prompt,
+                        session=state.session,
+                        max_turns=10  # Shorter rounds, but multiple iterations
+                    )
+                    
+                    msgs_sent = len(state.pending_chat_messages)
+                    logger.info(f"💬 Round {chat_round} complete - {msgs_sent} total messages sent")
+                    
+                    # Small delay between rounds to avoid spam
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    logger.error(f"Chat round {chat_round} error: {e}")
+                    await asyncio.sleep(2)
             
-            logger.info(f"💬 Chat phase - {remaining_time}s remaining")
-            logger.debug(f"Chat Prompt:\n{prompt}")
-            
-            # Much higher max_turns for chat phase (2 minutes of continuous interaction)
-            result = await Runner.run(
-                starting_agent=state.agent,
-                input=prompt,
-                session=state.session,
-                max_turns=50  # Allow many interactions during chat
-            )
-            
-            logger.info(f"💬 Chat complete - sent {len(state.pending_chat_messages)} messages")
+            logger.info(f"💬 Chat phase ended - {chat_round} rounds, {len(state.pending_chat_messages)} messages sent")
             
         else:
             logger.info("ℹ️  No action required for this phase.")
@@ -784,6 +812,27 @@ Do it NOW - no more analysis needed!"""
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.get("/chat/messages")
+async def get_chat_messages():
+    """Get pending chat messages from this agent"""
+    messages = state.pending_chat_messages.copy()
+    state.pending_chat_messages.clear()
+    return {"messages": messages}
+
+
+@app.post("/chat")
+async def receive_chat_message(request: dict):
+    """Receive chat message from host"""
+    # Store received messages for agent's context
+    sender_index = request.get("sender_index")
+    message = request.get("message")
+    msg_id = request.get("message_id")
+    
+    # Agent can use this to update their understanding of the game
+    logger.info(f"[Agent] Received chat from player {sender_index}: {message}")
+    return {"status": "ok"}
 
 
 # ============================================================================

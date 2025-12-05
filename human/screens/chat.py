@@ -80,10 +80,18 @@ class ChatScreen(Screen):
         import time
         self.start_time = time.time()
         
+        # Check if human player is alive
+        human_player = self.game_engine.players[self.game_engine.human_player_index]
+        
         # Update game info
         alive_count = sum(1 for p in self.game_engine.players if p.alive)
         info = self.query_one("#info_label", Label)
-        info.update(f"Day {self.game_engine.day_number} | DISCUSSION | Alive: {alive_count} | Time: {self.duration_seconds}s")
+        day_num = self.game_engine.game_phases.day_number if self.game_engine.game_phases else 0
+        
+        if not human_player.alive:
+            info.update(f"Day {day_num} | DISCUSSION | Alive: {alive_count} | ☠️ YOU ARE DEAD")
+        else:
+            info.update(f"Day {day_num} | DISCUSSION | Alive: {alive_count} | Time: {self.duration_seconds}s")
         
         # Initialize last_displayed_msg_id if not set
         if not hasattr(self.game_engine, 'last_displayed_msg_id'):
@@ -92,10 +100,20 @@ class ChatScreen(Screen):
         # Welcome messages
         chat = self.query_one("#chat_display", RichLog)
         chat.write(Text("=" * 60, style="bold yellow"))
-        chat.write(Text(f"DAY {self.game_engine.day_number} - DISCUSSION PHASE", style="bold cyan"))
+        day_num = self.game_engine.game_phases.day_number if self.game_engine.game_phases else 0
+        chat.write(Text(f"DAY {day_num} - DISCUSSION PHASE", style="bold cyan"))
         chat.write(Text("=" * 60, style="bold yellow"))
-        chat.write(Text("💬 Chat with other players", style="dim"))
-        chat.write(Text("⌨️  Press Ctrl+D to proceed to voting", style="dim"))
+        
+        if not human_player.alive:
+            chat.write(Text("💀 YOU ARE DEAD", style="bold red"))
+            chat.write(Text("👻 You can observe but cannot participate", style="dim"))
+            # Disable input for dead players
+            chat_input = self.query_one("#chat_input", Input)
+            chat_input.disabled = True
+            chat_input.placeholder = "You are dead and cannot send messages"
+        else:
+            chat.write(Text("💬 Chat with other players", style="dim"))
+            chat.write(Text("⌨️  Press Ctrl+D to proceed to voting", style="dim"))
         chat.write("")
         
         # Focus input
@@ -108,6 +126,14 @@ class ChatScreen(Screen):
         """Handle message submission"""
         message = event.value.strip()
         if not message:
+            return
+        
+        # Check if player is alive
+        human_player = self.game_engine.players[self.game_engine.human_player_index]
+        if not human_player.alive:
+            chat = self.query_one("#chat_display", RichLog)
+            chat.write(Text("💀 You are dead and cannot send messages", style="red"))
+            event.input.value = ""
             return
         
         # Clear input
@@ -148,7 +174,8 @@ class ChatScreen(Screen):
                     remaining = max(0, self.duration_seconds - elapsed)
                     
                     alive_count = sum(1 for p in self.game_engine.players if p.alive)
-                    info.update(f"Day {self.game_engine.day_number} | DISCUSSION | Alive: {alive_count} | Time: {remaining}s")
+                    day_num = self.game_engine.game_phases.day_number if self.game_engine.game_phases else 0
+                    info.update(f"Day {day_num} | DISCUSSION | Alive: {alive_count} | Time: {remaining}s")
                     
                     # Auto-proceed when time runs out
                     if remaining == 0:

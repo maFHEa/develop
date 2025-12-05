@@ -56,7 +56,16 @@ def create_agent_tools(state, phase: str = "setup"):
         else:
             logger.info("📭 No new messages")
         
-        formatted = state.chat_history.format_messages(messages)
+        # Add game state context to help agent understand situation
+        alive_players = [i for i in range(state.num_players) if i in getattr(state, 'survivors', [])]
+        dead_players = [i for i in range(state.num_players) if i not in alive_players]
+        
+        context = f"\n🎮 GAME STATE:\n"
+        context += f"🟢 Alive: {len(alive_players)} players {alive_players}\n"
+        context += f"💀 Dead: {len(dead_players)} players {dead_players}\n"
+        context += f"📊 Day: {state.current_turn}\n\n"
+        
+        formatted = context + state.chat_history.format_messages(messages)
         return formatted
     
     @function_tool
@@ -128,6 +137,9 @@ def create_agent_tools(state, phase: str = "setup"):
         target_index: Annotated[int, "Index of player to vote for elimination (0-indexed). Use -1 to abstain."]
     ) -> str:
         """REQUIRED for vote phase. Cast your vote to eliminate a player."""
+        if not state.alive:
+            return "죽은 플레이어는 투표할 수 없습니다."
+        
         if state.action_submitted:
             return "You have already submitted a vote for this phase."
         
@@ -153,6 +165,9 @@ def create_agent_tools(state, phase: str = "setup"):
         - Doctor: Choose a player to save (CAN target self to heal yourself!).
         - Police: Choose a player to investigate (cannot target self).
         """
+        if not state.alive:
+            return "죽은 플레이어는 행동할 수 없습니다."
+        
         if state.action_submitted:
             return "You have already submitted an action for this phase."
         
@@ -404,6 +419,11 @@ def get_role_instructions(role: str, player_index: int) -> str:
             f"🎯 WIN CONDITION: Mafia wins when mafia members ≥ living citizens\n"
             f"🌙 NIGHT ACTION: Use submit_night_action(target) to KILL a citizen\n"
             f"💀 STRATEGY: Blend in, deflect suspicion, eliminate threats\n"
+            f"🎲 TARGET SELECTION: DON'T always pick the same target! Vary your choices strategically:\n"
+            f"  - Prioritize vocal players who lead discussions\n"
+            f"  - Target players who seem intelligent or analytical\n"
+            f"  - Eliminate players who suspected you or other mafia\n"
+            f"  - Consider who the doctor might protect\n"
             f"⚠️ CRITICAL: During the day, pretend to be a citizen. NEVER reveal you are mafia!"
         ),
         "doctor": (
@@ -476,6 +496,58 @@ def create_action_prompt(phase: str, turn: int, survivors_str: str, dead_str: st
     
     action_tool = "submit_night_action(target)" if phase == "night" else "submit_vote(target)"
     
+    # Add strategic guidance based on role
+    strategic_tip = ""
+    if role == "mafia" and phase == "night":
+        # Only add "don't default to Player 0" warning on first night (turn 1)
+        if turn == 1:
+            strategic_tip = (
+                "\n🎯 TARGETING STRATEGY (First Night!):\n"
+                "• Analyze ALL alive players - don't just default to the first option!\n"
+                "• Who has been most vocal or influential in discussions?\n"
+                "• Who seems intelligent and might figure out you're mafia?\n"
+                "• Consider all players strategically\n"
+            )
+        else:
+            strategic_tip = (
+                "\n🎯 TARGETING STRATEGY:\n"
+                "• Who has been most vocal or influential in discussions?\n"
+                "• Who seems intelligent and might figure out you're mafia?\n"
+                "• Who accused you or seemed suspicious of you?\n"
+                "• Vary your targets - unpredictability helps mafia win\n"
+            )
+    elif role == "doctor" and phase == "night":
+        strategic_tip = (
+            "\n🎯 PROTECTION STRATEGY:\n"
+            "• Who is most likely to be targeted by mafia?\n"
+            "• Consider protecting vocal, smart players\n"
+            "• You CAN protect yourself if you feel threatened\n"
+            "• Vary your choices - don't be predictable\n"
+        )
+    elif role == "police" and phase == "night":
+        strategic_tip = (
+            "\n🎯 INVESTIGATION STRATEGY:\n"
+            "• Investigate suspicious or defensive players\n"
+            "• Don't waste investigations on obvious citizens\n"
+            "• Build evidence to share strategically during day\n"
+        )
+    
+    # Only add Player 0 warning for mafia on first night
+    action_hint = ""
+    if role == "mafia" and phase == "night":
+        if turn == 1:
+            action_hint = "🔪 Mafia: Pick someone to kill - think strategically about ALL options!"
+        else:
+            action_hint = "🔪 Mafia: Pick someone to kill"
+    elif role == "doctor":
+        action_hint = "💊 Doctor: Pick someone to save (can be yourself!)"
+    elif role == "police":
+        action_hint = "🔍 Police: Pick someone to investigate"
+    elif phase == "night":
+        action_hint = "😴 Citizen: Call submit_night_action(-1) to abstain"
+    else:
+        action_hint = "🗳️ Vote for who you think is Mafia"
+    
     return f"""🎮 {phase.upper()} PHASE (Turn {turn})
 
 🟢 ALIVE: [{survivors_str}]
@@ -483,14 +555,14 @@ def create_action_prompt(phase: str, turn: int, survivors_str: str, dead_str: st
 
 📢 {message}
 
-🎯 YOUR ROLE: {role.upper()}
+🎯 YOUR ROLE: {role.upper()}{strategic_tip}
 
 ⚡ WORKFLOW:
 1. (Optional) Call get_strategic_overview() or view_suspicion_notes() to review
-2. Think about who to target
+2. Analyze ALL available targets - consider each player's behavior
 3. ⚠️ CRITICAL: MUST call {action_tool}(target_index) before finishing!
 
-{'🔪 Mafia: Pick someone to kill' if role == 'mafia' else '💊 Doctor: Pick someone to save (can be yourself!)' if role == 'doctor' else '🔍 Police: Pick someone to investigate' if role == 'police' else '😴 Citizen: Call submit_night_action(-1) to abstain' if phase == 'night' else '🗳️ Vote for who you think is Mafia'}
+{action_hint}
 
 🚨 WARNING: If you don't call {action_tool}(), you will be forced to abstain!
 Analyze if you want, but ALWAYS end by calling {action_tool}(your_choice)!"""
@@ -516,29 +588,33 @@ def create_chat_prompt(turn: int, survivors_str: str, dead_str: str, role: str, 
 🕐 Time Remaining: {remaining_time} seconds
 {time_guidance}
 
-🟢 ALIVE: [{survivors_str}]
-💀 DEAD: [{dead_str}]
+🟢 ALIVE: [{survivors_str}] ({len([s for s in survivors_str.split(',') if s.strip()])} players)
+💀 DEAD: [{dead_str}] ({len([d for d in dead_str.split(',') if d.strip()]) if dead_str else 0} players)
 
 📢 {message}
 
 🎯 YOUR ROLE: {role.upper()}
+{'🔴 CRITICAL: Only ' + str(len([s for s in survivors_str.split(',') if s.strip()])) + ' players remain! Game is in final stage!' if len([s for s in survivors_str.split(',') if s.strip()]) <= 3 else ''}
 
 💡 WHAT TO DO:
-• Call read_chat_messages() to see what others are saying
-• Respond naturally if you have something to add
+• ALWAYS start by calling read_chat_messages() to see what others are saying
+• PAY ATTENTION to who died and who is alive - this is critical information!
+• If there are new messages, respond to them naturally and ANSWER QUESTIONS
+• If no new messages yet, you can still send an opening statement
 • Use view_suspicion_notes() to review your notes
 • Use analysis tools (get_strategic_overview, analyze_player_behavior) to gather intel
-• Call send_chat_message() when you want to speak
-• DON'T spam - be selective about when to talk
+• Call send_chat_message() to participate in discussion
 • React to deaths, accusations, and important events
 
 ⚠️ BEHAVIORAL RULES:
-• Read several times before responding
-• Don't reply to every message - that's robotic
-• Short messages (1-2 sentences)
+• This is a CONTINUOUS chat session - you'll be called multiple times
+• Each round: read messages → think → respond if you have something to say
+• If nothing to say this round, just call read_chat_messages() and wait
+• Short messages (1-2 sentences per message)
 • Korean casual speech (반말)
 • Natural reactions: 어?, 헐, 그니까, ㄴㄴ, 아닌데?
 • When time < 30s, start wrapping up
-• When time < 10s, don't send new messages
+• When time < 10s, only send critical messages
 
+🔄 This chat round will end soon, but you'll be called again if time remains!
 Act like a human player - selective, reactive, natural!"""

@@ -193,18 +193,49 @@ class MafiaGameApp(App):
                 await night_screen.dismiss_event.wait()
                 self.pop_screen()
                 
-                winner = self.game_engine.check_win_condition()
+                winner = await self.game_engine.check_win_condition()
                 if winner:
-                    # Show game over screen
+                    # Show game over screen and wait indefinitely
                     game_over_screen = GameOverScreen(winner, self.game_engine.players)
                     self.push_screen(game_over_screen)
-                    # Wait for user to exit (game over screen will call app.exit())
-                    return
+                    # Game over screen will call app.exit() when user presses exit
+                    # Keep loop alive until app.exit() is called
+                    while True:
+                        await asyncio.sleep(1)
                 
                 # Day phase - use TUI
                 self.game_engine.phase = "day"
                 chat_duration = 120  # 2 minutes for chat
-                # Note: Agent chat phase removed in refactoring - agents chat via normal flow
+                
+                # Start agent chat phase - request all agents to start chatting
+                survivors = self.game_engine.get_survivors()
+                dead = self.game_engine.get_dead_players()
+                
+                # Request agents to start chatting (fire and forget)
+                async def start_agent_chat():
+                    import httpx
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        tasks = []
+                        for player in self.game_engine.players:
+                            if not player.is_human and player.alive:
+                                tasks.append(
+                                    client.post(
+                                        f"{player.address}/request_action",
+                                        json={
+                                            "phase": "chat",
+                                            "message": f"Day {self.game_engine.game_phases.day_number} discussion has begun.",
+                                            "survivors": survivors,
+                                            "dead_players": dead,
+                                            "remaining_time": chat_duration
+                                        }
+                                    )
+                                )
+                        if tasks:
+                            await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Start agents chatting in background
+                asyncio.create_task(start_agent_chat())
+                
                 await self.game_engine.broadcast_update("day", f"Day {self.game_engine.game_phases.day_number} discussion has begun.")
                 
                 # Show chat screen with timer
@@ -266,18 +297,26 @@ class MafiaGameApp(App):
                 await vote_screen.dismiss_event.wait()
                 self.pop_screen()
                 
-                winner = self.game_engine.check_win_condition()
+                winner = await self.game_engine.check_win_condition()
                 if winner:
-                    # Show game over screen
+                    # Show game over screen and wait indefinitely
                     game_over_screen = GameOverScreen(winner, self.game_engine.players)
                     self.push_screen(game_over_screen)
-                    # Wait for user to exit (game over screen will call app.exit())
-                    return
+                    # Game over screen will call app.exit() when user presses exit
+                    # Keep loop alive until app.exit() is called
+                    while True:
+                        await asyncio.sleep(1)
         
         except KeyboardInterrupt:
             pass
+        except Exception as e:
+            # Log any unexpected errors
+            import traceback
+            print(f"Error in game loop: {e}")
+            traceback.print_exc()
         finally:
-            self.exit()
+            # Only exit if not already exiting from game over screen
+            pass  # App will exit from GameOverScreen.action_exit_game()
 
 
 # ============================================================================
