@@ -90,3 +90,31 @@ async def relay_decrypt(request: dict):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/investigate_parallel")
+async def investigate_parallel(request: dict):
+    """
+    병렬 조사: 암호문을 받아서 partial decrypt만 수행
+    Agent와 동일한 엔드포인트
+    """
+    try:
+        if state.cc is None or state.keypair is None:
+            raise ValueError("Keys not initialized")
+        
+        ciphertext_b64 = request["ciphertext"]
+        ciphertext = deserialize_ciphertext(state.cc, ciphertext_b64)
+        
+        # Partial decrypt (human uses partial_decrypt_lead)
+        partial = partial_decrypt_lead(state.cc, ciphertext, state.keypair.secretKey)
+        partial_b64 = serialize_ciphertext(state.cc, partial)
+        
+        print(f"[HTTP] 🔍 Investigate parallel: partial decrypt completed")
+        
+        return {"partial_result": partial_b64}
+        
+    except Exception as e:
+        print(f"[HTTP] ❌ Investigate parallel error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

@@ -74,6 +74,7 @@ class NightScreen(Screen):
         self.selected_target: Optional[int] = None
         self.action_submitted = False
         self.dismiss_event = asyncio.Event()
+        self.human_player_index = 0  # Human is always player 0
     
     def compose(self) -> ComposeResult:
         yield Header()
@@ -136,6 +137,11 @@ class NightScreen(Screen):
             
             if target not in self.survivors:
                 self.add_message(f"❌ Invalid target: {target} is not alive", "red")
+                return
+            
+            # Police/Mafia cannot target themselves
+            if self.human_role in ["police", "mafia"] and target == self.human_player_index:
+                self.add_message(f"❌ You cannot target yourself!", "red")
                 return
             
             self.selected_target = target

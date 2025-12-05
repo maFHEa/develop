@@ -67,14 +67,16 @@ class GamePhases:
         investigations_enc = [deserialize_ciphertext(self.crypto_ops.cc, enc) for enc in investigate_vectors]
         
         # Debug: Decrypt individual vectors to verify one-hot property
-        if self.logger:
-            self.logger.log("\nDEBUG: Individual player vectors (before aggregation)")
-            for i, attack_ct in enumerate(attacks_enc):
-                attack_plain = await self.crypto_ops.threshold_decrypt_vector(attack_ct, players)
-                self.logger.log(f"  Player {i} attack: {attack_plain}")
-            for i, heal_ct in enumerate(heals_enc):
-                heal_plain = await self.crypto_ops.threshold_decrypt_vector(heal_ct, players)
-                self.logger.log(f"  Player {i} heal: {heal_plain}")
+        # DEBUG: Optionally decrypt individual vectors for logging (VERY EXPENSIVE)
+        # Commented out to improve performance - threshold decrypt is slow
+        # if self.logger:
+        #     self.logger.log("\nDEBUG: Individual player vectors (before aggregation)")
+        #     for i, attack_ct in enumerate(attacks_enc):
+        #         attack_plain = await self.crypto_ops.threshold_decrypt_vector(attack_ct, players)
+        #         self.logger.log(f"  Player {i} attack: {attack_plain}")
+        #     for i, heal_ct in enumerate(heals_enc):
+        #         heal_plain = await self.crypto_ops.threshold_decrypt_vector(heal_ct, players)
+        #         self.logger.log(f"  Player {i} heal: {heal_plain}")
 
         print("[Engine] Aggregating all attack vectors (blind protocol)...")
         total_attacks = aggregate_encrypted_vectors(self.crypto_ops.cc, attacks_enc)
@@ -121,81 +123,22 @@ class GamePhases:
            - Police: role_vector[target] · mafia_check → encrypted result
            - Others: Enc(0) with random delay (agent 코드에서 자동 실행)
         2. Server aggregates all encrypted results
-        3. Parallel decrypt: Police collects all partials
+        3. Police agent already performed parallel decrypt client-side
         
         Security:
         - Network traffic looks identical for all players
-        - Only police sees final result
+        - Only police sees final result (already decrypted on their side)
+        - Server doesn't know who the police is or what the result is
         """
-        print("[Engine] Processing police investigations (parallel decrypt)...")
+        print("[Engine] Police investigation: Server aggregating encrypted packets (blind protocol)...")
         
-        # Aggregate all investigation results
+        # Just aggregate - police already did parallel decrypt on their side
+        # This is just to maintain the blind protocol
         total_result_enc = aggregate_encrypted_vectors(self.crypto_ops.cc, investigations_enc)
         
-        # Serialize for decryption
-        total_result_b64 = serialize_ciphertext(self.crypto_ops.cc, total_result_enc)
-        
-        # Find who is police (first alive player who sent non-zero investigation)
-        first_alive_index = None
-        for i, player in enumerate(players):
-            if player.alive:
-                first_alive_index = i
-                break
-        
-        if first_alive_index is None:
-            print("[Engine] No alive players for investigation!")
-            return
-        
-        # Parallel decrypt: requester (police) collects all partials
-        result_vector = await self.crypto_ops.decryption_service.parallel_decrypt(
-            total_result_b64,
-            first_alive_index,
-            players
-        )
-        
-        # Send result to police agent
-        police_player = players[first_alive_index]
-        if police_player.is_human:
-            # Human police - show result here
-            from agent.service.crypto.roles import NUM_ROLE_TYPES
-            is_mafia = sum(result_vector[:NUM_ROLE_TYPES]) == 1
-            # Find target (first non-zero in result)
-            target = None
-            for i in range(len(players)):
-                if i < len(result_vector) and result_vector[i] > 0:
-                    target = i
-                    break
-            
-            print("=" * 60)
-            print("🔍 POLICE INVESTIGATION RESULT (You are the police!)")
-            if target is not None:
-                print(f"   Player {target} is: {'🎭 MAFIA' if is_mafia else '✅ NOT MAFIA'}")
-            print("=" * 60)
-        else:
-            # AI police - send result via HTTP
-            from agent.service.crypto.roles import NUM_ROLE_TYPES
-            is_mafia = sum(result_vector[:NUM_ROLE_TYPES]) == 1
-            # Find target
-            target = None
-            for i in range(len(players)):
-                if i < len(result_vector) and result_vector[i] > 0:
-                    target = i
-                    break
-            
-            if target is not None:
-                try:
-                    import httpx
-                    async with httpx.AsyncClient(timeout=5.0) as client:
-                        await client.post(
-                            f"{police_player.address}/store_investigation_result",
-                            json={
-                                "target": target,
-                                "is_mafia": is_mafia
-                            }
-                        )
-                        print(f"[Engine] Investigation result sent to {police_player.name}")
-                except Exception as e:
-                    print(f"[Engine] Failed to send investigation result: {e}")
+        # Note: We don't decrypt here. Police already did it client-side.
+        print("[Engine] Investigation complete (police already has result)")
+
 
     def _announce_night_results(self, players, log_callback):
         """Announce night phase results"""

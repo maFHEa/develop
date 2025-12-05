@@ -53,14 +53,20 @@ class ThresholdDecryptionService:
         # Collect partials from all other players in parallel
         tasks = []
         for i, player in enumerate(players):
-            if i != requester_index and not player.is_human:
+            if i != requester_index:  # Skip requester (already did partial decrypt above)
                 tasks.append(self.network.request_partial_investigation(player, ciphertext_b64))
         
         if tasks:
-            partial_results_b64 = await asyncio.gather(*tasks)
-            for partial_b64 in partial_results_b64:
-                partial = deserialize_ciphertext(self.cc, partial_b64)
-                all_partials.append(partial)
+            partial_results_b64 = await asyncio.gather(*tasks, return_exceptions=True)
+            for idx, partial_result in enumerate(partial_results_b64):
+                if isinstance(partial_result, Exception):
+                    print(f"[Decrypt] Warning: Failed to get partial from player {idx}: {partial_result}")
+                    continue
+                try:
+                    partial = deserialize_ciphertext(self.cc, partial_result)
+                    all_partials.append(partial)
+                except Exception as e:
+                    print(f"[Decrypt] Warning: Failed to deserialize partial from player {idx}: {e}")
         
         # Fusion decrypt
         final_result = fusion_decrypt(self.cc, all_partials)
