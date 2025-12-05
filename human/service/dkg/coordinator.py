@@ -104,12 +104,17 @@ class DKGCoordinator:
     async def assign_roles_blindly(
         self, 
         num_players: int, 
-        ai_addresses: List[str]
+        ai_addresses: List[str],
+        player_addresses: List[str] = None
     ) -> tuple[str, str]:
         """Blind role 할당 - returns (role, encrypted_role_vector)"""
         print("="*50)
         print(" Role Assignment (Blind Threshold Decryption)")
         print("="*50)
+        
+        # Build player addresses if not provided
+        if player_addresses is None:
+            player_addresses = ["http://localhost:9000"] + ai_addresses
         
         # Role 생성
         self.role_assigner = RoleAssigner(
@@ -145,7 +150,7 @@ class DKGCoordinator:
             self.protocol.joint_public_key
         )
         await self.network.distribute_encrypted_roles(
-            encrypted_roles, joint_pk_b64
+            encrypted_roles, joint_pk_b64, player_addresses
         )
         
         # 각 에이전트 복호화 도움

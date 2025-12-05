@@ -12,4 +12,6 @@ class InitRequest(BaseModel):
     joint_public_key: str  # Base64 serialized joint public key
     player_index: int
     num_players: int
+    player_addresses: List[str] = []  # All player HTTP addresses for relay decrypt
     # Note: role is NOT sent here - it will be decrypted blindly later
+

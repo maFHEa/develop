@@ -110,9 +110,10 @@ class DKGNetworkClient:
         return partials
     
     async def distribute_encrypted_roles(
-        self,
+        self, 
         encrypted_roles: List[str],
-        joint_pk_b64: str
+        joint_pk_b64: str,
+        player_addresses: List[str]
     ):
         """암호화된 role들을 에이전트에게 분배"""
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -122,10 +123,10 @@ class DKGNetworkClient:
                     json={
                         "my_index": i + 1,
                         "encrypted_roles": encrypted_roles,
-                        "joint_public_key": joint_pk_b64
+                        "joint_public_key": joint_pk_b64,
+                        "player_addresses": player_addresses
                     }
                 )
-    
     async def help_agent_decrypt_role(
         self,
         agent_index: int,
