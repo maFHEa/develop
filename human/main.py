@@ -315,19 +315,56 @@ class GameEngine:
 # Main Entry Point
 # ============================================================================
 
+async def spawn_agents(lobby_addresses: List[str], game_id: str, api_key: str) -> List[str]:
+    """Spawn AI agents from lobby servers and return their addresses"""
+    agent_addresses = []
+
+    print(f"\n[Setup] Spawning {len(lobby_addresses)} AI agents...")
+    async with httpx.AsyncClient(timeout=30) as client:
+        for i, lobby_addr in enumerate(lobby_addresses):
+            try:
+                print(f"[Setup] Spawning agent {i+1} from {lobby_addr}...")
+                response = await client.post(
+                    f"{lobby_addr}/spawn_agent",
+                    json={"game_id": game_id, "openai_api_key": api_key}
+                )
+                response.raise_for_status()
+                data = response.json()
+                agent_address = data["address"]
+                agent_addresses.append(agent_address)
+                print(f"[Setup] ✓ Agent {i+1} spawned at {agent_address}")
+            except Exception as e:
+                print(f"[Setup] ✗ Failed to spawn agent {i+1}: {e}")
+                raise
+
+    return agent_addresses
+
+
 async def main():
     """Simple CLI game for testing"""
+    import os
+
     engine = GameEngine()
-    
-    # Example setup
-    ai_addresses = [
+
+    # Get OpenAI API key from environment or prompt
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        api_key = input("Enter your OpenAI API key: ").strip()
+
+    # Lobby server addresses
+    lobby_addresses = [
+        "http://localhost:8000",
         "http://localhost:8001",
         "http://localhost:8002",
-        "http://localhost:8003",
-        "http://localhost:8004"
+        "http://localhost:8003"
     ]
-    
-    await engine.setup_game(len(ai_addresses), ai_addresses, "test_game_123")
+
+    game_id = "test_game_123"
+
+    # Spawn agents and get their actual addresses
+    ai_addresses = await spawn_agents(lobby_addresses, game_id, api_key)
+
+    await engine.setup_game(len(ai_addresses), ai_addresses, game_id)
     await engine.run_game_loop()
 
 
