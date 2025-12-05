@@ -142,7 +142,7 @@ class DKGCoordinator:
             self.protocol.keypair
         )
         human_encrypted_role = encrypted_roles[0]  # Store for investigation
-        print(f"\n✓ Your role: {human_role.upper()}\n")
+        # 역할은 비밀 - 콘솔에 출력하지 않음
         
         # 에이전트들에게 role 분배
         joint_pk_b64 = serialize_public_key(

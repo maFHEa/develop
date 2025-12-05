@@ -731,7 +731,9 @@ async def complete_role_decryption(request: dict):
         
         # Initialize AI agent now that we have the role
         session_id = f"game_{state.game_id}_agent_{state.agent_id}_player_{state.player_index}"
-        db_path = "db/conversations.db"
+        db_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db")
+        os.makedirs(db_dir, exist_ok=True)
+        db_path = os.path.join(db_dir, "conversations.db")
         state.session = SQLiteSession(session_id, db_path)
         await state.session.clear_session()
         state.last_read_msg_id = -1
@@ -777,7 +779,9 @@ async def initialize_agent(request: InitRequest):
 
         # SQLiteSession으로 게임별, 에이전트별 대화 히스토리 관리
         session_id = f"game_{state.game_id}_agent_{state.agent_id}_player_{state.player_index}"
-        db_path = "db/conversations.db"
+        db_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db")
+        os.makedirs(db_dir, exist_ok=True)
+        db_path = os.path.join(db_dir, "conversations.db")
         state.session = SQLiteSession(session_id, db_path)
         await state.session.clear_session()
         state.last_read_msg_id = -1
@@ -931,58 +935,73 @@ Do it NOW - no more analysis needed!"""
                     state.pending_action_target = None
                     
         elif request.phase in ["chat", "day"]:
-            # Chat/Day phase - continuous interaction until time runs out
+            # Chat/Day phase - run in background and return immediately
+            # This allows the host to poll /chat/messages while agent generates responses
             from agent_logic import create_agent_tools, create_chat_prompt
             import time as time_module
-            
+
             state.agent.tools = create_agent_tools(state, phase="chat")
-            
+
             remaining_time = request.remaining_time if request.remaining_time else 120
-            start_time = time_module.time()
-            chat_round = 0
-            
-            # Keep chatting until time runs out
-            while True:
-                chat_round += 1
-                elapsed = time_module.time() - start_time
-                time_left = max(0, remaining_time - elapsed)
-                
-                # Stop if less than 5 seconds left
-                if time_left < 5:
-                    logger.info(f"⏱️  Chat time ended - {elapsed:.1f}s elapsed")
-                    break
-                
-                prompt = create_chat_prompt(
-                    turn=state.current_turn,
-                    survivors_str=survivors_str,
-                    dead_str=dead_str,
-                    role=state.role,
-                    message=request.message,
-                    remaining_time=int(time_left)
-                )
-                
-                logger.info(f"💬 Chat round {chat_round} - {time_left:.0f}s remaining")
-                
-                try:
-                    # Shorter max_turns per round so we can loop
-                    result = await Runner.run(
-                        starting_agent=state.agent,
-                        input=prompt,
-                        session=state.session,
-                        max_turns=10  # Shorter rounds, but multiple iterations
+
+            # Run chat in background task
+            async def run_chat_phase():
+                start_time = time_module.time()
+                chat_round = 0
+
+                # Keep chatting until time runs out
+                while state.current_phase in ["chat", "day"]:
+                    chat_round += 1
+                    elapsed = time_module.time() - start_time
+                    time_left = max(0, remaining_time - elapsed)
+
+                    # Stop if less than 5 seconds left
+                    if time_left < 5:
+                        logger.info(f"⏱️  Chat time ended - {elapsed:.1f}s elapsed")
+                        break
+
+                    prompt = create_chat_prompt(
+                        turn=state.current_turn,
+                        survivors_str=survivors_str,
+                        dead_str=dead_str,
+                        role=state.role,
+                        message=request.message,
+                        remaining_time=int(time_left)
                     )
-                    
-                    msgs_sent = len(state.pending_chat_messages)
-                    logger.info(f"💬 Round {chat_round} complete - {msgs_sent} total messages sent")
-                    
-                    # Small delay between rounds to avoid spam
-                    await asyncio.sleep(2)
-                    
-                except Exception as e:
-                    logger.error(f"Chat round {chat_round} error: {e}")
-                    await asyncio.sleep(2)
-            
-            logger.info(f"💬 Chat phase ended - {chat_round} rounds, {len(state.pending_chat_messages)} messages sent")
+
+                    logger.info(f"💬 Chat round {chat_round} - {time_left:.0f}s remaining")
+
+                    try:
+                        # Shorter max_turns per round so we can loop
+                        result = await Runner.run(
+                            starting_agent=state.agent,
+                            input=prompt,
+                            session=state.session,
+                            max_turns=10  # Shorter rounds, but multiple iterations
+                        )
+
+                        msgs_sent = len(state.pending_chat_messages)
+                        logger.info(f"💬 Round {chat_round} complete - {msgs_sent} total messages sent")
+
+                        # Small delay between rounds to avoid spam
+                        await asyncio.sleep(2)
+
+                    except Exception as e:
+                        logger.error(f"Chat round {chat_round} error: {e}")
+                        await asyncio.sleep(2)
+
+                logger.info(f"💬 Chat phase ended - {chat_round} rounds, {len(state.pending_chat_messages)} messages sent")
+
+            # Start chat in background and return immediately
+            asyncio.create_task(run_chat_phase())
+            logger.info("💬 Chat phase started in background - returning immediately")
+
+            # Return empty response for chat phase (no action vectors needed)
+            return ActionResponse(
+                encrypted_action=None,
+                phase=request.phase,
+                chat_messages=[]
+            )
             
         else:
             logger.info("ℹ️  No action required for this phase.")
@@ -1096,6 +1115,20 @@ async def get_chat_messages():
     messages = state.pending_chat_messages.copy()
     state.pending_chat_messages.clear()
     return {"messages": messages}
+
+
+@app.post("/chat/phase")
+async def chat_phase_control(request: dict):
+    """Control chat phase - start or stop"""
+    action = request.get("action", "")
+
+    if action == "stop":
+        # Stop chat by changing phase
+        logger.info("💬 Chat phase stop requested - changing phase to 'vote'")
+        state.current_phase = "vote"  # This will cause the chat loop to exit
+        return {"status": "stopped"}
+
+    return {"status": "unknown_action"}
 
 
 @app.post("/chat")

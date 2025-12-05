@@ -40,7 +40,7 @@ class LoadingScreen(Screen):
         yield Header()
         
         with Container(id="loading_container"):
-            yield Label("🎮 Initializing Game...", classes="loading_title")
+            yield Label("🎮 게임 초기화 중...", classes="loading_title")
             yield LoadingIndicator()
             yield RichLog(id="status_log", highlight=True, markup=True, auto_scroll=True)
         

@@ -2,8 +2,7 @@
 Vote Screen for Elimination Phase
 """
 from textual.app import ComposeResult
-from textual.widgets import Header, Footer, Label, RichLog, Button, OptionList
-from textual.widgets.option_list import Option
+from textual.widgets import Header, Footer, Label, RichLog, Button
 from textual.containers import Container, Vertical, Horizontal
 from textual.binding import Binding
 from textual.screen import Screen
@@ -11,28 +10,27 @@ from rich.text import Text
 from typing import Optional, List
 import asyncio
 
+from .components import PlayerStatusBar, PlayerCard
+
 
 class VoteScreen(Screen):
-    """Voting phase screen"""
-    
+    """Voting phase screen - click player cards to vote"""
+
     CSS = """
     VoteScreen {
         background: $surface;
     }
-    
-    #game_info {
+
+    #player_bar {
         dock: top;
-        height: 3;
-        background: $primary;
-        content-align: center middle;
     }
-    
+
     #vote_container {
         width: 100%;
-        height: 100%;
+        height: 1fr;
         align: center middle;
     }
-    
+
     #vote_panel {
         width: 80;
         height: auto;
@@ -40,143 +38,158 @@ class VoteScreen(Screen):
         border: solid $primary;
         padding: 2;
     }
-    
+
     #vote_title {
         text-align: center;
         color: $warning;
         text-style: bold;
         margin-bottom: 1;
     }
-    
+
     #vote_instructions {
         text-align: center;
         color: $text-muted;
         margin-bottom: 2;
     }
-    
-    #player_list {
-        height: 15;
-        margin-bottom: 1;
-        border: solid $accent;
-    }
-    
+
     #button_container {
         width: 100%;
         height: auto;
         align: center middle;
+        margin-top: 1;
     }
-    
+
     .vote_button {
         margin: 0 1;
     }
-    
+
     #message_log {
-        height: 8;
+        height: 10;
         background: $surface-darken-1;
         margin-top: 1;
     }
     """
-    
+
     BINDINGS = [
         Binding("escape", "app.quit", "Quit"),
     ]
-    
-    def __init__(self, day_number: int, is_alive: bool, survivors: List[int], player_names: List[str]):
+
+    def __init__(
+        self,
+        day_number: int,
+        is_alive: bool,
+        survivors: List[int],
+        player_names: List[str],
+        players: List[dict] = None,
+        human_index: int = 0,
+        human_role: str = "citizen"
+    ):
         super().__init__()
         self.day_number = day_number
         self.is_alive = is_alive
         self.survivors = survivors
         self.player_names = player_names
+        self.players = players or []
+        self.human_index = human_index
+        self.human_role = human_role
         self.selected_target: Optional[int] = None
         self.vote_submitted = False
         self.dismiss_event = asyncio.Event()
-    
+
     def compose(self) -> ComposeResult:
         yield Header()
-        
-        # Game info bar
-        with Container(id="game_info"):
-            yield Label(id="info_label")
-        
+
+        # 클릭 가능한 플레이어 상태바
+        if self.players:
+            yield PlayerStatusBar(
+                players=self.players,
+                human_index=self.human_index,
+                human_role=self.human_role,
+                show_human_role=True,
+                title=f"🗳️ Day {self.day_number} - Vote",
+                selectable=self.is_alive,
+                exclude_self=True,  # 자기 자신은 투표 불가
+                id="player_bar"
+            )
+
         # Main vote panel
         with Container(id="vote_container"):
             with Vertical(id="vote_panel"):
-                yield Label("🗳️  VOTING PHASE", id="vote_title")
-                
+                yield Label("🗳️  투표 단계", id="vote_title")
+
                 if self.is_alive:
-                    yield Label("Select a player to eliminate:", id="vote_instructions")
-                    yield OptionList(id="player_list")
-                    
+                    yield Label("위의 플레이어 카드를 클릭하여 처형 대상을 투표하세요", id="vote_instructions")
+
                     with Horizontal(id="button_container"):
-                        yield Button("Submit Vote", id="submit_btn", variant="primary", classes="vote_button")
-                        yield Button("Abstain", id="abstain_btn", variant="default", classes="vote_button")
+                        yield Button("투표 제출", id="submit_btn", variant="primary", classes="vote_button")
+                        yield Button("기권", id="abstain_btn", variant="default", classes="vote_button")
                 else:
-                    yield Label("You are dead and cannot vote.", id="vote_instructions")
-                
+                    yield Label("💀 사망하여 투표할 수 없습니다.", id="vote_instructions")
+
                 yield RichLog(id="message_log", highlight=True, markup=True)
-        
+
         yield Footer()
-    
+
     async def on_mount(self) -> None:
         """Initialize vote screen"""
-        # Update game info
-        alive_count = len(self.survivors)
-        info = self.query_one("#info_label", Label)
-        info.update(f"Day {self.day_number} | VOTING | Alive: {alive_count}")
-        
-        # Add message
         log = self.query_one("#message_log", RichLog)
-        log.write(Text("=" * 60, style="bold yellow"))
-        log.write(Text(f"DAY {self.day_number} - VOTING", style="bold cyan"))
-        log.write(Text("=" * 60, style="bold yellow"))
-        
+
         if self.is_alive:
-            # Populate player list
-            player_list = self.query_one("#player_list", OptionList)
-            for survivor_idx in self.survivors:
-                player_list.add_option(Option(
-                    f"Player {survivor_idx}: {self.player_names[survivor_idx]}",
-                    id=str(survivor_idx)
-                ))
-            
-            log.write(Text("Select a player to eliminate from the list above.", style="dim"))
+            log.write(Text("👆 위의 플레이어 카드를 클릭하여 투표 대상을 선택하세요", style="cyan"))
+            log.write(Text("[투표 제출] 또는 [기권]을 클릭하세요", style="dim"))
         else:
-            log.write(Text("You cannot participate in voting.", style="red"))
+            log.write(Text("💀 당신은 사망했습니다.", style="red"))
+            log.write(Text("투표에 참여할 수 없습니다.", style="dim"))
             # Auto-submit for dead player
             self.selected_target = -1
             self.vote_submitted = True
-    
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        """Handle player selection"""
-        try:
-            self.selected_target = int(event.option.id)
-            log = self.query_one("#message_log", RichLog)
-            log.write(Text(f"Selected: {event.option.prompt}", style="cyan"))
-        except Exception as e:
-            self.add_message(f"Error selecting player: {e}", "red")
-    
+
+    def on_player_card_selected(self, event: PlayerCard.Selected) -> None:
+        """Handle player card click"""
+        if self.vote_submitted:
+            return
+
+        # Clear previous selection
+        player_bar = self.query_one("#player_bar", PlayerStatusBar)
+        player_bar.clear_selections()
+
+        # Set new selection
+        self.selected_target = event.player_index
+        player_bar.update_player(event.player_index, selected=True)
+
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button clicks"""
         if event.button.id == "submit_btn":
             if self.selected_target is not None:
                 self.vote_submitted = True
-                self.add_message(f"✓ Vote submitted for Player {self.selected_target}", "green")
-                self.add_message("Waiting for other players to vote...", "dim")
-                # Disable buttons
+                self.add_message("⏳ 다른 플레이어의 투표를 기다리는 중...", "yellow")
+
+                # Disable buttons and player selection
                 self.query_one("#submit_btn", Button).disabled = True
                 self.query_one("#abstain_btn", Button).disabled = True
+                try:
+                    player_bar = self.query_one("#player_bar", PlayerStatusBar)
+                    player_bar.disable_all()
+                except:
+                    pass
             else:
-                self.add_message("⚠️ Please select a player first", "yellow")
-        
+                self.add_message("⚠️ 먼저 플레이어 카드를 클릭하세요", "yellow")
+
         elif event.button.id == "abstain_btn":
             self.selected_target = -1  # Abstain
             self.vote_submitted = True
-            self.add_message("✓ Abstained from voting", "yellow")
-            self.add_message("Waiting for other players to vote...", "dim")
+            self.add_message("⏳ 다른 플레이어의 투표를 기다리는 중...", "yellow")
+
             # Disable buttons
             self.query_one("#submit_btn", Button).disabled = True
             self.query_one("#abstain_btn", Button).disabled = True
-    
+            try:
+                player_bar = self.query_one("#player_bar", PlayerStatusBar)
+                player_bar.disable_all()
+            except:
+                pass
+
     def add_message(self, message: str, style: str = "white") -> None:
         """Add a message to the log"""
         log = self.query_one("#message_log", RichLog)

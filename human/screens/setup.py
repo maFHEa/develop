@@ -77,21 +77,21 @@ class SetupScreen(Screen):
         yield Header()
         
         with ScrollableContainer(id="setup_container"):
-            yield Label("🎮 Mafia Game - Setup", classes="setup_title")
+            yield Label("🎮 마피아 게임 - 설정", classes="setup_title")
             yield Label("")
-            
+
             # Number of AI agents
             with Horizontal(classes="input_row"):
-                yield Label("Number of AI Agents:", classes="label")
-                yield Input(placeholder="3-9 agents", id="num_agents", classes="input_field")
-            
+                yield Label("AI 에이전트 수:", classes="label")
+                yield Input(placeholder="3-9 에이전트", id="num_agents", classes="input_field")
+
             # API Key
             with Horizontal(classes="input_row"):
                 yield Label("OpenAI API Key:", classes="label")
                 yield Input(placeholder="sk-...", password=True, id="api_key", classes="input_field")
-            
+
             yield Label("")
-            yield Label("Lobby Addresses (one per line):", classes="label")
+            yield Label("로비 주소 (한 줄에 하나씩):", classes="label")
             
             # Lobby address input
             with Horizontal(classes="input_row"):
@@ -103,9 +103,9 @@ class SetupScreen(Screen):
             
             # Action buttons
             with Horizontal(classes="button_row"):
-                yield Button("Load from Config", id="load_config", variant="default")
-                yield Button("Start Game", id="start_game", variant="success")
-                yield Button("Quit", id="quit_btn", variant="error")
+                yield Button("설정 파일에서 불러오기", id="load_config", variant="default")
+                yield Button("게임 시작", id="start_game", variant="success")
+                yield Button("종료", id="quit_btn", variant="error")
         
         yield Footer()
     
@@ -141,12 +141,12 @@ class SetupScreen(Screen):
         from config import NETWORK_CONFIG
         
         if not NETWORK_CONFIG.get("use_config_lobbies", False):
-            self._show_error("Config setting 'use_config_lobbies' is False")
+            self._show_error("설정 파일의 'use_config_lobbies'가 False입니다")
             return
-        
+
         configured = NETWORK_CONFIG.get("lobby_addresses", [])
         if not configured:
-            self._show_error("No lobby addresses in config")
+            self._show_error("설정 파일에 로비 주소가 없습니다")
             return
         
         self.lobby_addresses = configured.copy()
@@ -161,14 +161,14 @@ class SetupScreen(Screen):
         # Validate inputs
         api_key = self.query_one("#api_key", Input).value.strip()
         if not api_key:
-            self._show_error("API Key is required")
+            self._show_error("API Key가 필요합니다")
             return
-        
+
         num_agents = len(self.lobby_addresses)
         total_players = num_agents + 1
-        
+
         if total_players < GAME_CONFIG["min_players"] or total_players > GAME_CONFIG["max_players"]:
-            self._show_error(f"Need {GAME_CONFIG['min_players']-1} to {GAME_CONFIG['max_players']-1} agents")
+            self._show_error(f"{GAME_CONFIG['min_players']-1}~{GAME_CONFIG['max_players']-1}명의 에이전트가 필요합니다")
             return
         
         # Pass data to main app
@@ -187,13 +187,13 @@ class SetupScreen(Screen):
         log.clear()
         
         if not self.lobby_addresses:
-            log.write(Text("No lobbies added yet", style="dim"))
+            log.write(Text("추가된 로비가 없습니다", style="dim"))
         else:
             for i, addr in enumerate(self.lobby_addresses, 1):
                 log.write(Text(f"{i}. {addr}", style="green"))
-            
+
             total = len(self.lobby_addresses) + 1
-            log.write(Text(f"\nTotal Players: {total}", style="bold cyan"))
+            log.write(Text(f"\n총 플레이어 수: {total}", style="bold cyan"))
     
     def _show_error(self, message: str) -> None:
         """Display an error message"""

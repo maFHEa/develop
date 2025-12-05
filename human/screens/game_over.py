@@ -70,7 +70,7 @@ class GameOverScreen(Screen):
             with Vertical(id="result_panel"):
                 yield Label(id="winner_title")
                 yield Static(id="roles_table")
-                yield Button("Exit Game", id="exit_button", variant="primary")
+                yield Button("게임 종료", id="exit_button", variant="primary")
         
         yield Footer()
     
@@ -79,24 +79,24 @@ class GameOverScreen(Screen):
         # Winner announcement
         winner_label = self.query_one("#winner_title", Label)
         if self.winner == "citizens":
-            winner_label.update("🎉 CITIZENS WIN! 🎉")
+            winner_label.update("🎉 시민 승리! 🎉")
             winner_label.styles.color = "green"
         else:
-            winner_label.update("👿 MAFIA WINS! 👿")
+            winner_label.update("👿 마피아 승리! 👿")
             winner_label.styles.color = "red"
-        
+
         # Create roles table
-        table = Table(title="Final Roles", show_header=True, header_style="bold cyan")
-        table.add_column("Player", style="cyan", no_wrap=True)
-        table.add_column("Name", style="white")
-        table.add_column("Status", style="dim")
-        
+        table = Table(title="최종 결과", show_header=True, header_style="bold cyan")
+        table.add_column("플레이어", style="cyan", no_wrap=True)
+        table.add_column("이름", style="white")
+        table.add_column("상태", style="dim")
+
         for player in self.players:
-            status = "✓ ALIVE" if player.alive else "💀 DEAD"
+            status = "✓ 생존" if player.alive else "💀 사망"
             status_style = "green" if player.alive else "red"
             
             table.add_row(
-                f"Player {player.index}",
+                f"플레이어 {player.index}",
                 player.name,
                 f"[{status_style}]{status}[/{status_style}]"
             )

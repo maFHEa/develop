@@ -91,7 +91,7 @@ class GameEngine:
         self.human_role, human_encrypted_role, all_encrypted_roles = await self.dkg_coordinator.assign_roles_blindly(
             self.num_players, ai_addresses
         )
-        self.logger.log(f"Human assigned role: {self.human_role}")
+        # 역할은 비밀 - 로그에 출력하지 않음
 
         # Start HTTP server in background
         self._start_http_server(cc, keypair, self.human_role)
@@ -283,7 +283,6 @@ class GameEngine:
 
         print(f"\n{'='*60}")
         print(f"YOUR TURN - {phase.upper()} PHASE")
-        print(f"Your Role: {role.upper()}")
         print(f"Survivors: {survivors}")
         print(f"{'='*60}")
 
