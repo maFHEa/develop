@@ -13,6 +13,7 @@ from game_phases import GamePhases
 from game_logger import GameLogger
 from config import NETWORK_CONFIG
 from models import Player
+from chat import GameChatHistory
 
 
 class GameEngine:
@@ -27,7 +28,8 @@ class GameEngine:
         self.phase = "setup"
         self.game_log: List[str] = []
         self.chat_message_id_counter = 0
-        
+        self.chat_history = GameChatHistory()
+
         # TUI integration: Store action from TUI
         self.pending_human_action: Optional[int] = None
         self.human_action_ready = False

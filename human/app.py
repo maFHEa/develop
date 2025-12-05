@@ -192,8 +192,8 @@ class MafiaGameApp(App):
                 night_screen.dismiss_event.set()
                 await night_screen.dismiss_event.wait()
                 self.pop_screen()
-                
-                winner = self.game_engine.check_win_condition()
+
+                winner = await self.game_engine.check_win_condition()
                 if winner:
                     # Show game over screen
                     game_over_screen = GameOverScreen(winner, self.game_engine.players)
@@ -265,8 +265,8 @@ class MafiaGameApp(App):
                 vote_screen.dismiss_event.set()
                 await vote_screen.dismiss_event.wait()
                 self.pop_screen()
-                
-                winner = self.game_engine.check_win_condition()
+
+                winner = await self.game_engine.check_win_condition()
                 if winner:
                     # Show game over screen
                     game_over_screen = GameOverScreen(winner, self.game_engine.players)

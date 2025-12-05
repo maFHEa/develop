@@ -83,7 +83,8 @@ class ChatScreen(Screen):
         # Update game info
         alive_count = sum(1 for p in self.game_engine.players if p.alive)
         info = self.query_one("#info_label", Label)
-        info.update(f"Day {self.game_engine.day_number} | DISCUSSION | Alive: {alive_count} | Time: {self.duration_seconds}s")
+        day_num = self.game_engine.game_phases.day_number if self.game_engine.game_phases else 1
+        info.update(f"Day {day_num} | DISCUSSION | Alive: {alive_count} | Time: {self.duration_seconds}s")
         
         # Initialize last_displayed_msg_id if not set
         if not hasattr(self.game_engine, 'last_displayed_msg_id'):
@@ -92,7 +93,7 @@ class ChatScreen(Screen):
         # Welcome messages
         chat = self.query_one("#chat_display", RichLog)
         chat.write(Text("=" * 60, style="bold yellow"))
-        chat.write(Text(f"DAY {self.game_engine.day_number} - DISCUSSION PHASE", style="bold cyan"))
+        chat.write(Text(f"DAY {day_num} - DISCUSSION PHASE", style="bold cyan"))
         chat.write(Text("=" * 60, style="bold yellow"))
         chat.write(Text("💬 Chat with other players", style="dim"))
         chat.write(Text("⌨️  Press Ctrl+D to proceed to voting", style="dim"))
@@ -148,7 +149,8 @@ class ChatScreen(Screen):
                     remaining = max(0, self.duration_seconds - elapsed)
                     
                     alive_count = sum(1 for p in self.game_engine.players if p.alive)
-                    info.update(f"Day {self.game_engine.day_number} | DISCUSSION | Alive: {alive_count} | Time: {remaining}s")
+                    day_num = self.game_engine.game_phases.day_number if self.game_engine.game_phases else 1
+                    info.update(f"Day {day_num} | DISCUSSION | Alive: {alive_count} | Time: {remaining}s")
                     
                     # Auto-proceed when time runs out
                     if remaining == 0:
