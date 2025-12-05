@@ -89,7 +89,6 @@ class GameOverScreen(Screen):
         table = Table(title="Final Roles", show_header=True, header_style="bold cyan")
         table.add_column("Player", style="cyan", no_wrap=True)
         table.add_column("Name", style="white")
-        table.add_column("Role", style="yellow")
         table.add_column("Status", style="dim")
         
         for player in self.players:
@@ -99,7 +98,6 @@ class GameOverScreen(Screen):
             table.add_row(
                 f"Player {player.index}",
                 player.name,
-                player.role.upper(),
                 f"[{status_style}]{status}[/{status_style}]"
             )
         

@@ -10,7 +10,8 @@ import sys
 from screens import LoadingScreen, NightScreen, SetupScreen, ChatScreen, VoteScreen, GameOverScreen
 
 # Import game engine
-from main import GameEngine, spawn_agents_from_lobbies, check_agent_health
+from main import GameEngine
+from network import spawn_agents_from_lobbies, check_agent_health
 from config import GAME_CONFIG, NETWORK_CONFIG
 
 
@@ -120,18 +121,14 @@ class MafiaGameApp(App):
         # Setup game
         loading_screen.add_status("Setting up game...", "yellow")
         await asyncio.sleep(0.3)
-        self.game_engine.setup_game(
+        await self.game_engine.setup_game(
             num_ai_agents=len(agent_addresses),
             ai_addresses=agent_addresses,
-            game_id=game_id,
-            lobby_addresses=self.lobby_addresses
+            game_id=game_id
         )
         loading_screen.add_status("✓ Game setup complete", "green")
         
-        # Initialize agents
-        loading_screen.add_status("Initializing agents with roles...", "yellow")
-        await asyncio.sleep(0.3)
-        await self.game_engine.initialize_agents()
+        # Note: Agent initialization is now part of setup_game (blind role assignment)
         loading_screen.add_status("✓ All agents initialized", "green")
         
         await asyncio.sleep(1)
@@ -151,9 +148,9 @@ class MafiaGameApp(App):
                 
                 # Create and show night screen
                 night_screen = NightScreen(
-                    self.game_engine.day_number,
+                    self.game_engine.game_phases.day_number,
                     human_player.alive,
-                    human_player.role,
+                    self.game_engine.human_role,
                     survivors
                 )
                 
@@ -164,8 +161,13 @@ class MafiaGameApp(App):
                 while not night_screen.action_submitted:
                     await asyncio.sleep(0.5)
                 
-                # Store human's target before executing night phase
-                self.game_engine.human_night_target = night_screen.selected_target
+                # Pass TUI action to game engine
+                if human_player.alive and night_screen.selected_target is not None:
+                    self.game_engine.pending_human_action = night_screen.selected_target
+                    self.game_engine.human_action_ready = True
+                else:
+                    self.game_engine.pending_human_action = -1  # Abstain
+                    self.game_engine.human_action_ready = True
                 
                 night_screen.add_message("⏳ Waiting for all players...", "yellow")
                 
@@ -175,8 +177,8 @@ class MafiaGameApp(App):
                 await asyncio.sleep(1)
                 
                 # Show results
-                if self.game_engine.last_killed:
-                    for victim_index in self.game_engine.last_killed:
+                if self.game_engine.game_phases.last_killed:
+                    for victim_index in self.game_engine.game_phases.last_killed:
                         victim = self.game_engine.players[victim_index]
                         night_screen.add_message(f"💀 {victim.name} was killed!", "red")
                         await asyncio.sleep(0.5)
@@ -202,8 +204,8 @@ class MafiaGameApp(App):
                 # Day phase - use TUI
                 self.game_engine.phase = "day"
                 chat_duration = 120  # 2 minutes for chat
-                await self.game_engine.start_agent_chat_phase(duration_seconds=chat_duration)
-                await self.game_engine.broadcast_update("day", f"Day {self.game_engine.day_number} discussion has begun.")
+                # Note: Agent chat phase removed in refactoring - agents chat via normal flow
+                await self.game_engine.broadcast_update("day", f"Day {self.game_engine.game_phases.day_number} discussion has begun.")
                 
                 # Show chat screen with timer
                 chat_screen = ChatScreen(self.game_engine, duration_seconds=chat_duration)
@@ -213,8 +215,7 @@ class MafiaGameApp(App):
                 while not chat_screen.should_proceed:
                     await asyncio.sleep(0.5)
                 
-                # Screen will dismiss itself, no need to pop
-                # stop_agent_chat_phase is called in chat_screen._do_proceed()
+                # Note: stop_agent_chat_phase removed in refactoring
                 
                 # Vote phase - use TUI
                 self.game_engine.phase = "vote"
@@ -224,7 +225,7 @@ class MafiaGameApp(App):
                 
                 # Create and show vote screen
                 vote_screen = VoteScreen(
-                    self.game_engine.day_number,
+                    self.game_engine.game_phases.day_number,
                     human_player.alive,
                     survivors,
                     player_names
@@ -236,8 +237,13 @@ class MafiaGameApp(App):
                 while not vote_screen.vote_submitted:
                     await asyncio.sleep(0.5)
                 
-                # Store human's vote
-                self.game_engine.human_vote_target = vote_screen.selected_target
+                # Pass TUI vote to game engine
+                if human_player.alive and vote_screen.selected_target is not None:
+                    self.game_engine.pending_human_action = vote_screen.selected_target
+                    self.game_engine.human_action_ready = True
+                else:
+                    self.game_engine.pending_human_action = -1  # Abstain
+                    self.game_engine.human_action_ready = True
                 
                 vote_screen.add_message("⏳ Collecting votes from all players...", "yellow")
                 await asyncio.sleep(1)
@@ -249,8 +255,8 @@ class MafiaGameApp(App):
                 await asyncio.sleep(1)
                 
                 # Show results
-                if self.game_engine.last_voted_out is not None:
-                    victim = self.game_engine.players[self.game_engine.last_voted_out]
+                if self.game_engine.game_phases.last_voted_out is not None:
+                    victim = self.game_engine.players[self.game_engine.game_phases.last_voted_out]
                     vote_screen.add_message(f"💀 {victim.name} was voted out!", "red")
                 else:
                     vote_screen.add_message("✓ No one was eliminated", "yellow")

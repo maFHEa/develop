@@ -346,14 +346,14 @@ def create_agent_tools(state, phase: str = "setup"):
     # Build tool list dynamically based on role and phase
     tools = []
     
-    # Chat phase - continuous interaction
-    if phase == "chat":
+    # Chat phase - full strategic tools for discussion
+    if phase == "chat" or phase == "day":
         tools.extend([
             read_chat_messages,
             send_chat_message,
             write_suspicion_note,
             view_suspicion_notes,
-            # Advanced strategic tools
+            # Advanced strategic tools for discussion
             analyze_player_behavior,
             get_strategic_overview,
             record_observation,
@@ -363,33 +363,35 @@ def create_agent_tools(state, phase: str = "setup"):
         ])
         return tools
     
-    # 1. Chat tools - available in all phases when alive
-    if state.alive:
-        tools.extend([read_chat_messages, send_chat_message])
-    
-    # 2. Suspicion notes - always available to track thoughts
-    tools.extend([write_suspicion_note, view_suspicion_notes])
-    
-    # 3. Advanced strategic tools - always available for analysis
-    tools.extend([
-        analyze_player_behavior,
-        get_strategic_overview,
-        record_observation,
-        analyze_voting_patterns,
-        predict_next_target,
-        detect_lies_and_contradictions
-    ])
-    
-    # 4. Phase-specific tools
-    if phase == "vote":
-        tools.append(submit_vote)
+    # Night phase - focus on action, limited analysis
     elif phase == "night":
-        tools.append(submit_night_action)
-        # Police gets investigation recording during night
+        tools.extend([
+            submit_night_action,  # PRIMARY TOOL - must be called
+            view_suspicion_notes,  # Review notes
+            get_strategic_overview,  # Quick overview only
+        ])
+        # Police gets investigation recording
         if state.role == "police":
             tools.append(record_investigation_result)
+        return tools
     
-    return tools
+    # Vote phase - focus on voting decision
+    elif phase == "vote":
+        tools.extend([
+            submit_vote,  # PRIMARY TOOL - must be called
+            view_suspicion_notes,  # Review notes
+            get_strategic_overview,  # Quick overview only
+            analyze_player_behavior,  # Analyze specific suspect
+        ])
+        return tools
+    
+    # Default/setup phase - basic tools
+    else:
+        tools.extend([
+            write_suspicion_note,
+            view_suspicion_notes,
+        ])
+        return tools
 # ============================================================================
 # Agent Creation & Prompts
 # ============================================================================
@@ -441,70 +443,24 @@ def create_mafia_agent(state, role: str, player_index: int, num_players: int) ->
         f"Player Index: {player_index} | Total Players: {num_players}\n\n"
         f"{role_instruction}\n\n"
         
-        "=== GAME RULES ===\n"
-        "🌙 NIGHT: Mafia kills, Doctor saves, Police investigates (all secret)\n"
-        "☀️ DAY: Morning reveals deaths, then discussion phase begins\n"
-        "💬 DISCUSSION: Free chat to share theories and suspicions\n"
-        "🗳️ VOTE: Everyone votes to eliminate a suspect\n"
-        "🔄 Repeat until one team wins\n\n"
+        "=== CORE RULES ===\n"
+        "• NIGHT phase: MUST call submit_night_action(target) immediately\n"
+        "• VOTE phase: MUST call submit_vote(target) immediately\n"
+        "• CHAT phase: Read and respond naturally in Korean\n"
+        "• Use tools to analyze, but ALWAYS submit your action!\n\n"
         
-        "=== GAME PHASE UNDERSTANDING ===\n"
-        "When you see 'Night X has ended' or 'recently_killed' in updates:\n"
-        "- Those players JUST DIED last night\n"
-        "- Mafia attacked them OR voting eliminated them\n"
-        "- ACKNOWLEDGE these deaths in your chat\n"
-        "- Discuss WHO might have killed them and WHY\n"
-        "Example: 'Player 2가 죽었네... 의사가 못 살렸나보네'\n\n"
+        "=== ACTION PRIORITY ===\n"
+        "1. Night/Vote phase → Check notes briefly → SUBMIT ACTION\n"
+        "2. Don't overthink - make a decision and act\n"
+        "3. You can use get_strategic_overview() ONCE if needed\n"
+        "4. Then IMMEDIATELY call submit_night_action() or submit_vote()\n\n"
         
-        "=== YOUR STRATEGIC TOOLBOX ===\n"
-        "You have POWERFUL tools to analyze and strategize:\n\n"
-        
-        "🔍 ANALYSIS TOOLS (USE THESE OFTEN!):\n"
-        "• get_strategic_overview() - See voting blocks, suspicious players, patterns\n"
-        "• analyze_player_behavior(X) - Deep dive into player X's behavior\n"
-        "• analyze_voting_patterns() - Detect coordinated voting (mafia signs)\n"
-        "• detect_lies_and_contradictions(X) - Check if player X is lying\n"
-        "• predict_next_target() - Predict who will die next\n\n"
-        
-        "📝 MEMORY TOOLS:\n"
-        "• record_observation('...') - Save important insights\n"
-        "• write_suspicion_note(X, level, reasoning) - Track suspicions\n"
-        "• view_suspicion_notes() - Review your notes\n\n"
-        
-        "💡 STRATEGIC WORKFLOW:\n"
-        "1. Before voting/acting: Call get_strategic_overview()\n"
-        "2. Analyze suspicious players: Use analyze_player_behavior()\n"
-        "3. Check for lies: Use detect_lies_and_contradictions()\n"
-        "4. Make informed decision based on data\n"
-        "5. Record insights for future turns\n\n"
-        
-        "=== BEHAVIORAL RULES ===\n"
-        "1. CHAT phase: Read messages, sometimes respond (don't spam)\n"
-        "2. NIGHT phase: Call submit_night_action() ONCE with your target\n"
-        "3. VOTE phase: Call submit_vote() ONCE with your target\n"
-        "4. NEVER use meta-language like '말이 없군요', 'finished', 'done'\n"
-        "5. OK to stay silent - don't respond to everything\n"
-        "6. Keep messages SHORT - 1-2 sentences max\n"
-        "7. REACT to deaths and game events naturally\n"
-        "8. USE YOUR TOOLS - analyze before acting!\n\n"
-        
-        "=== HUMAN-LIKE CHAT BEHAVIOR ===\n"
-        "DON'T respond to every message - that's robotic!\n"
-        "✓ Read 2-3 times before speaking\n"
-        "✓ Only speak when you have something to add\n"
-        "✓ Respond when asked directly\n"
-        "✓ Jump in when topic changes or important events happen\n"
-        "✓ React to deaths: 'ㅇㅇ 죽었네', '이건 좀 이상한데?'\n"
-        "✓ Reference your analysis: 'Player 3 투표 패턴이 이상해'\n\n"
-        
-        "=== KOREAN CASUAL SPEECH (CRITICAL) ===\n"
-        "Use 반말 (informal): ~야, ~임, ~인가?, ~였음?, ~ㄴ가?, ~던데, ~나봐, ~거같음\n"
-        "Contractions: 그건, 뭔가, 좀, 진짜, 근데, 암튼\n"
-        "Natural reactions: 아 ㅋㅋ, 어?, 음.., 흠.., 그니까, 헐, 아닌데?\n"
-        "SHORT: 1-2 sentences max\n"
-        "NEVER formal: NO ~습니다, ~세요, ~합니다\n\n"
-        
-        "ALL CHAT MESSAGES MUST BE IN KOREAN WITH CASUAL SPEECH."
+        "=== KOREAN CHAT STYLE ===\n"
+        "• Use 반말: ~야, ~임, ~던데, ~나봐, ~거같음\n"
+        "• Short: 1-2 sentences max\n"
+        "• Natural: 그건, 뭔가, 좀, 진짜, 근데\n"
+        "• React: 어?, 헐, 아닌데?, ㅋㅋ\n"
+        "• NO formal speech (~습니다, ~세요)\n"
     )
     
     return Agent(
@@ -518,32 +474,71 @@ def create_mafia_agent(state, role: str, player_index: int, num_players: int) ->
 def create_action_prompt(phase: str, turn: int, survivors_str: str, dead_str: str, role: str, message: str) -> str:
     """Create the prompt for requesting agent action with clear context."""
     
-    # Parse recently killed/voted info from message if present
-    recently_info = ""
-    if "killed" in message.lower() or "죽" in message:
-        recently_info = "\n⚠️ RECENT DEATHS DETECTED - Acknowledge and discuss these deaths!"
+    action_tool = "submit_night_action(target)" if phase == "night" else "submit_vote(target)"
     
-    return f"""=== CURRENT GAME STATE ===
-Phase: {phase.upper()} (Turn {turn})
+    return f"""🎮 {phase.upper()} PHASE (Turn {turn})
 
-🟢 ALIVE PLAYERS: [{survivors_str}]
-💀 DEAD PLAYERS: [{dead_str}]
-{recently_info}
+🟢 ALIVE: [{survivors_str}]
+💀 DEAD: [{dead_str}]
 
-📢 Host Update: {message}
+📢 {message}
 
-=== YOUR ROLE: {role.upper()} ===
+🎯 YOUR ROLE: {role.upper()}
 
-=== CRITICAL REMINDERS ===
-⚠️ You can ONLY target/vote for ALIVE players: [{survivors_str}]
-⚠️ Dead players are OUT - do NOT target them
-⚠️ If deaths just occurred, ACKNOWLEDGE them in your reasoning
+⚡ WORKFLOW:
+1. (Optional) Call get_strategic_overview() or view_suspicion_notes() to review
+2. Think about who to target
+3. ⚠️ CRITICAL: MUST call {action_tool}(target_index) before finishing!
 
-=== YOUR TASK ===
-1. Analyze the current situation
-2. Consider who died and what it means
-3. Review your suspicion notes
-4. Make your decision
-5. MUST call {'submit_night_action()' if phase == 'night' else 'submit_vote()'}
+{'🔪 Mafia: Pick someone to kill' if role == 'mafia' else '💊 Doctor: Pick someone to save (can be yourself!)' if role == 'doctor' else '🔍 Police: Pick someone to investigate' if role == 'police' else '😴 Citizen: Call submit_night_action(-1) to abstain' if phase == 'night' else '🗳️ Vote for who you think is Mafia'}
 
-Think strategically and act naturally!"""
+🚨 WARNING: If you don't call {action_tool}(), you will be forced to abstain!
+Analyze if you want, but ALWAYS end by calling {action_tool}(your_choice)!"""
+
+
+def create_chat_prompt(turn: int, survivors_str: str, dead_str: str, role: str, message: str, remaining_time: int) -> str:
+    """Create the prompt for chat/day phase with time awareness."""
+    
+    time_guidance = ""
+    if remaining_time > 90:
+        time_guidance = "⏰ Plenty of time - read messages and participate naturally"
+    elif remaining_time > 60:
+        time_guidance = "⏰ Mid-phase - continue discussion, share your thoughts"
+    elif remaining_time > 30:
+        time_guidance = "⏰ Getting late - make your key points now"
+    elif remaining_time > 10:
+        time_guidance = "⏰ Final moments - wrap up your thoughts"
+    else:
+        time_guidance = "⏰ TIME ALMOST UP - send final message if needed, then stay quiet"
+    
+    return f"""💬 CHAT/DISCUSSION PHASE (Turn {turn})
+
+🕐 Time Remaining: {remaining_time} seconds
+{time_guidance}
+
+🟢 ALIVE: [{survivors_str}]
+💀 DEAD: [{dead_str}]
+
+📢 {message}
+
+🎯 YOUR ROLE: {role.upper()}
+
+💡 WHAT TO DO:
+• Call read_chat_messages() to see what others are saying
+• Respond naturally if you have something to add
+• Use view_suspicion_notes() to review your notes
+• Use analysis tools (get_strategic_overview, analyze_player_behavior) to gather intel
+• Call send_chat_message() when you want to speak
+• DON'T spam - be selective about when to talk
+• React to deaths, accusations, and important events
+
+⚠️ BEHAVIORAL RULES:
+• Read several times before responding
+• Don't reply to every message - that's robotic
+• Short messages (1-2 sentences)
+• Korean casual speech (반말)
+• Natural reactions: 어?, 헐, 그니까, ㄴㄴ, 아닌데?
+• When time < 30s, start wrapping up
+• When time < 10s, don't send new messages
+
+Act like a human player - selective, reactive, natural!"""
