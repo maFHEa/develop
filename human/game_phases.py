@@ -6,11 +6,12 @@ import sys
 from typing import List, Optional
 
 sys.path.append('../agent')
-from security import (
-    deserialize_ciphertext,
+
+from service.crypto.serialization import deserialize_ciphertext
+from service.crypto.vector_operations import (
     aggregate_encrypted_vectors,
     compute_killed_vector,
-    multiply_encrypted_vectors
+    multiply_encrypted_vectors,
 )
 
 

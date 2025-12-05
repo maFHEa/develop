@@ -32,20 +32,32 @@ from models import (
     PartialDecryptResponse,
     RoleAssignmentRequest
 )
-from security import (
-    create_openfhe_context,
+
+from service.crypto.context import create_openfhe_context
+
+from service.crypto.key_generation import (
+    dkg_keygen_lead,
+    dkg_keygen_join
+)
+
+from service.crypto.serialization import (
+    serialize_ciphertext,
+    deserialize_ciphertext,
     deserialize_crypto_context,
     serialize_public_key,
     deserialize_public_key,
     serialize_ciphertext,
-    deserialize_ciphertext,
-    dkg_keygen_lead,
-    dkg_keygen_join,
+    deserialize_ciphertext
+)
+
+from service.crypto.threshold_decryption import (
     partial_decrypt_lead,
-    partial_decrypt_main,
+    partial_decrypt_main
+)
+
+from service.crypto.vector_operations import (
     create_one_hot_vector,
-    create_zero_vector,
-    create_random_dummy_vector
+    create_zero_vector
 )
 
 # ============================================================================
@@ -165,8 +177,7 @@ async def generate_keyswitchgen(request: dict):
         if game_id != state.game_id:
             raise ValueError(f"Game ID mismatch: expected {state.game_id}, got {game_id}")
         
-        from security import deserialize_eval_mult_key_object, serialize_eval_mult_key
-        
+        from service.crypto.serialization import deserialize_eval_mult_key_object, serialize_eval_mult_key
         # Deserialize previous key (from human)
         prev_key_b64 = request.get("prev_key")
         prev_key = deserialize_eval_mult_key_object(state.cc, prev_key_b64)
@@ -206,7 +217,7 @@ async def generate_multmultkey(request: dict):
         if game_id != state.game_id:
             raise ValueError(f"Game ID mismatch: expected {state.game_id}, got {game_id}")
         
-        from security import deserialize_eval_mult_key_object, serialize_eval_mult_key
+        from service.crypto.serialization import deserialize_eval_mult_key_object, serialize_eval_mult_key
         
         # Deserialize combined key
         combined_key_b64 = request.get("combined_key")
@@ -329,7 +340,7 @@ async def receive_mult_keys(request: dict):
         
         mult_keys = request.get("mult_keys", [])
         
-        from security import deserialize_eval_mult_key
+        from service.crypto.serialization import deserialize_eval_mult_key
         
         # Insert all multiplication keys into context
         # Skip keys that are already inserted (our own key)
@@ -477,7 +488,8 @@ async def complete_role_decryption(request: dict):
         partial_results.append(my_partial)
         
         # Fusion decrypt
-        from security import fusion_decrypt, ROLE_ENCODING
+        from service.crypto.threshold_decryption import fusion_decrypt
+        from service.crypto.roles import ROLE_ENCODING
         final_plaintext = fusion_decrypt(state.cc, partial_results)
         decrypted_value = final_plaintext.GetPackedValue()[0]
         my_role = next(role for role, code in ROLE_ENCODING.items() if code == decrypted_value)
@@ -768,29 +780,29 @@ Do it NOW - no more analysis needed!"""
             # Assign real vector to matching role, dummies to others
             if state.role == "mafia":
                 attack_vec = real_vector
-                heal_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
-                investigate_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
+                heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+                investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
                 logger.info(f"🔪 Attack: REAL → Player {state.pending_action_target} | Heal: DUMMY | Investigate: DUMMY")
             elif state.role == "doctor":
-                attack_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
+                attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
                 heal_vec = real_vector
-                investigate_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
+                investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
                 logger.info(f"💊 Attack: DUMMY | Heal: REAL → Player {state.pending_action_target} | Investigate: DUMMY")
             elif state.role == "police":
-                attack_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
-                heal_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
+                attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+                heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
                 investigate_vec = real_vector
                 logger.info(f"🔍 Attack: DUMMY | Heal: DUMMY | Investigate: REAL → Player {state.pending_action_target}")
             else:  # citizen
-                attack_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
-                heal_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
-                investigate_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
+                attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+                heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+                investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
                 logger.info("👤 Citizen: All DUMMY vectors")
         else:
             # No action or not night phase - all dummies
-            attack_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
-            heal_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
-            investigate_vec = create_random_dummy_vector(state.num_players, state.cc, state.joint_public_key)
+            attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+            heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+            investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
             logger.info("⏸️  No action: All DUMMY vectors")
 
         attack_b64 = serialize_ciphertext(state.cc, attack_vec)

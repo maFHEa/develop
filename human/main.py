@@ -7,7 +7,7 @@ import sys
 from typing import List, Optional
 import httpx
 
-from dkg_manager import DKGManager
+from service.dkg.coordinator import DKGCoordinator
 from crypto_operations import CryptoOperations
 from game_phases import GamePhases
 from game_logger import GameLogger
@@ -39,7 +39,7 @@ class GameEngine:
         self.human_action_ready = False
         
         # Managers (initialized during setup)
-        self.dkg_manager: Optional[DKGManager] = None
+        self.dkg_coordinator: Optional[DKGCoordinator] = None
         self.crypto_ops: Optional[CryptoOperations] = None
         self.game_phases: Optional[GamePhases] = None
         self.logger: Optional[GameLogger] = None
@@ -61,13 +61,13 @@ class GameEngine:
         self.logger.log(f"Game setup started with {self.num_players} players")
 
         # Initialize DKG Manager and run protocol
-        self.dkg_manager = DKGManager()
-        cc, keypair, joint_pk = await self.dkg_manager.run_dkg_protocol(
+        self.dkg_coordinator = DKGCoordinator()
+        cc, keypair, joint_pk = await self.dkg_coordinator.run_dkg_protocol(
             self.num_players, ai_addresses, game_id
         )
 
         # Assign roles blindly
-        self.human_role = await self.dkg_manager.assign_roles_blindly(
+        self.human_role = await self.dkg_coordinator.assign_roles_blindly(
             self.num_players, ai_addresses
         )
         self.logger.log(f"Human assigned role: {self.human_role}")

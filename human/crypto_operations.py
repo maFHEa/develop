@@ -13,16 +13,9 @@ agent_path = os.path.join(os.path.dirname(__file__), '..', 'agent')
 if os.path.abspath(agent_path) not in sys.path:
     sys.path.append(os.path.abspath(agent_path))
 
-from security import (
-    serialize_ciphertext,
-    deserialize_ciphertext,
-    create_zero_vector,
-    create_one_hot_vector,
-    create_random_dummy_vector,
-    partial_decrypt_lead,
-    fusion_decrypt,
-    aggregate_encrypted_vectors
-)
+from service.crypto.threshold_decryption import partial_decrypt_lead, fusion_decrypt
+from service.crypto.vector_operations import create_zero_vector, create_one_hot_vector
+from service.crypto.serialization import serialize_ciphertext, deserialize_ciphertext
 
 from config import NETWORK_CONFIG
 
@@ -210,8 +203,8 @@ class CryptoOperations:
             real_vec = create_one_hot_vector(self.num_players, target, self.cc, self.joint_public_key)
 
         # Create dummy vectors
-        dummy1 = create_random_dummy_vector(self.num_players, self.cc, self.joint_public_key)
-        dummy2 = create_random_dummy_vector(self.num_players, self.cc, self.joint_public_key)
+        dummy1 = create_zero_vector(self.num_players, self.cc, self.joint_public_key)
+        dummy2 = create_zero_vector(self.num_players, self.cc, self.joint_public_key)
         
         real_str = serialize_ciphertext(self.cc, real_vec)
         dummy1_str = serialize_ciphertext(self.cc, dummy1)
