@@ -6,7 +6,7 @@ from typing import List, Dict, Tuple
 import httpx
 
 from config import NETWORK_CONFIG
-from models import Player
+from model import Player
 
 
 async def spawn_agents_from_lobbies(lobby_addresses: List[str], openai_api_key: str, game_id: str) -> List[str]:

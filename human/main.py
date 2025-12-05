@@ -12,10 +12,10 @@ from service.crypto_ops import CryptoOperations
 from game_phases import GamePhases
 from game_logger import GameLogger
 from config import NETWORK_CONFIG
-from models import Player
+from model import Player
 
 # Import chat history from agent directory
-sys.path.append('../agent')
+sys.path.append('../agent/model')
 from chat import GameChatHistory
 
 
