@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-tenseal==0.3.14
+tenseal==0.3.16
 openai-agents==0.6.1
 pydantic==2.12.3
 httpx
