@@ -15,11 +15,11 @@ import uvicorn
 
 from agents import Agent, Runner, ToolCallItem, ToolCallOutputItem, MessageOutputItem, ItemHelpers, SQLiteSession
 
-from chat import GameChatHistory, ChatMessage
+from model.chat import GameChatHistory, ChatMessage
 from suspicion import SuspicionNoteManager, PoliceNoteManager
 from agent_logic import create_mafia_agent, create_action_prompt
 
-from models import (
+from model import (
     InitRequest,
     GameUpdateRequest,
     ActionResponse,
@@ -505,7 +505,7 @@ async def complete_role_decryption(request: dict):
         
         # Initialize AI agent now that we have the role
         session_id = f"game_{state.game_id}_agent_{state.agent_id}_player_{state.player_index}"
-        db_path = "conversations.db"
+        db_path = "db/conversations.db"
         state.session = SQLiteSession(session_id, db_path)
         await state.session.clear_session()
         state.last_read_msg_id = -1
@@ -550,7 +550,7 @@ async def initialize_agent(request: InitRequest):
 
         # SQLiteSession으로 게임별, 에이전트별 대화 히스토리 관리
         session_id = f"game_{state.game_id}_agent_{state.agent_id}_player_{state.player_index}"
-        db_path = "conversations.db"
+        db_path = "db/conversations.db"
         state.session = SQLiteSession(session_id, db_path)
         await state.session.clear_session()
         state.last_read_msg_id = -1
