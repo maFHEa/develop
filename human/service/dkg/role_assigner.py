@@ -12,7 +12,7 @@ from service.crypto.serialization import (
     deserialize_ciphertext,
 )
 from service.crypto.threshold_decryption import fusion_decrypt, partial_decrypt_lead
-from service.crypto.roles import ROLE_ENCODING
+from service.crypto.roles import ROLE_ENCODING, role_to_one_hot, NUM_ROLE_TYPES, one_hot_to_role
 from config import GAME_CONFIG, NETWORK_CONFIG
 
 
@@ -35,11 +35,12 @@ class RoleAssigner:
             roles.extend([role] * count)
         random.shuffle(roles)
         
-        # 개별 암호화
+        # 개별 암호화 (One-hot vector)
         encrypted_roles = []
         for role in roles:
-            encoded = ROLE_ENCODING[role]
-            plaintext = self.cc.MakePackedPlaintext([encoded])
+            # Convert role to one-hot vector
+            role_vector = role_to_one_hot(role)
+            plaintext = self.cc.MakePackedPlaintext(role_vector)
             ciphertext = self.cc.Encrypt(self.joint_public_key, plaintext)
             encrypted_roles.append(
                 serialize_ciphertext(self.cc, ciphertext)
@@ -53,7 +54,7 @@ class RoleAssigner:
         partial_results: List,
         keypair
     ) -> str:
-        """자신의 role 복호화"""
+        """자신의 role 복호화 (One-hot vector)"""
         my_role_enc = deserialize_ciphertext(self.cc, encrypted_role)
         
         # 자신의 partial 추가
@@ -64,9 +65,7 @@ class RoleAssigner:
         
         # Fusion
         final_plaintext = fusion_decrypt(self.cc, partial_results)
-        decrypted_value = final_plaintext.GetPackedValue()[0]
+        decrypted_vector = final_plaintext.GetPackedValue()[:NUM_ROLE_TYPES]
         
-        return next(
-            role for role, code in ROLE_ENCODING.items() 
-            if code == decrypted_value
-        )
+        # Convert one-hot vector to role name
+        return one_hot_to_role(decrypted_vector)

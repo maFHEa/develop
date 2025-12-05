@@ -20,11 +20,18 @@ class CryptoOperations:
         self.keypair = keypair
         self.joint_public_key = joint_public_key
         self.num_players = num_players
+        self.human_encrypted_role = None  # Store human's encrypted role for investigation
+        self.all_encrypted_roles: List[str] = []  # Store all players' encrypted roles
         
         # Initialize services
         self.vector_factory = VectorFactory(cc, joint_public_key, num_players)
         self.action_collector = ActionCollector(self.vector_factory)
         self.decryption_service = ThresholdDecryptionService(cc, keypair, num_players)
+    
+    def update_encrypted_roles(self, all_encrypted_roles: List[str]):
+        """Update the encrypted roles after they are assigned"""
+        self.all_encrypted_roles = all_encrypted_roles
+        self.vector_factory.all_encrypted_roles = all_encrypted_roles
     
     async def collect_encrypted_actions(
         self,

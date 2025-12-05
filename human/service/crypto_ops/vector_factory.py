@@ -21,6 +21,7 @@ class VectorFactory:
         self.cc = cc
         self.joint_public_key = joint_public_key
         self.num_players = num_players
+        self.all_encrypted_roles = []  # Will be updated later
     
     def create_zero_vector_str(self) -> str:
         """Create serialized zero vector"""
@@ -56,6 +57,33 @@ class VectorFactory:
         # Generate real vector
         if target == -1 or action_type is None:
             real_str = self.create_zero_vector_str()
+        elif action_type == "investigate":
+            # Police: Compute investigation result (role · mafia_check)
+            import sys
+            import os
+            agent_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'agent')
+            if os.path.abspath(agent_path) not in sys.path:
+                sys.path.append(os.path.abspath(agent_path))
+            from service.crypto.serialization import deserialize_ciphertext
+            from service.crypto.vector_operations import homomorphic_dot_product
+            
+            # Get target's encrypted role vector
+            target_role_enc_b64 = self.all_encrypted_roles[target]
+            target_role_enc = deserialize_ciphertext(self.cc, target_role_enc_b64)
+            
+            # Mafia check vector
+            mafia_check_vector = [0, 1, 0, 0]
+            
+            # Compute dot product
+            result_enc = homomorphic_dot_product(
+                self.cc,
+                target_role_enc,
+                mafia_check_vector
+            )
+            
+            # Serialize
+            from service.crypto.serialization import serialize_ciphertext
+            real_str = serialize_ciphertext(self.cc, result_enc)
         else:
             real_str = self.create_one_hot_vector_str(target)
         

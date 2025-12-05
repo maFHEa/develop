@@ -9,9 +9,13 @@ import json
 import os
 import sys
 import logging
+import tempfile
+import base64
+import httpx
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException
 import uvicorn
+from openfhe import BINARY
 
 from agents import Agent, Runner, ToolCallItem, ToolCallOutputItem, MessageOutputItem, ItemHelpers, SQLiteSession
 
@@ -90,6 +94,9 @@ class AgentState:
         self.pending_action_target: Optional[int] = None
         self.action_submitted: bool = False
         self.pending_chat_messages: List[str] = []
+        self.my_encrypted_role: Optional[str] = None  # For blind role protocol
+        self.encrypted_role_vector: Optional[str] = None  # For police investigation
+        self.all_encrypted_roles: List[str] = []  # All players' encrypted roles
 
 state = AgentState()
 app = FastAPI(title="Mafia AI Agent")
@@ -404,6 +411,85 @@ async def partial_decrypt(request: PartialDecryptRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/relay_decrypt")
+async def relay_decrypt(request: dict):
+    """
+    Relay decryption: accumulate partial decryptions and pass to next player.
+    Last player performs fusion decrypt with all partials.
+    """
+    try:
+        if state.cc is None or state.keypair is None:
+            raise ValueError("Keys not initialized. Complete DKG first.")
+
+        ciphertext_b64 = request["ciphertext"]
+        partial_results_b64 = request.get("partial_results", [])  # Accumulated partials
+        remaining_order = request["remaining_order"]
+        player_addresses = request["player_addresses"]
+        
+        logger.info(f"🔄 Relay decrypt - remaining_order: {remaining_order}, player_addresses: {player_addresses}")
+        
+        # Deserialize original ciphertext and perform partial decryption
+        ciphertext = deserialize_ciphertext(state.cc, ciphertext_b64)
+        partial = partial_decrypt_main(state.cc, ciphertext, state.keypair.secretKey)
+        
+        # Add my partial to the list
+        partial_b64 = serialize_ciphertext(state.cc, partial)
+        partial_results_b64.append(partial_b64)
+        
+        logger.info(f"🔄 Relay decrypt: {len(partial_results_b64)} partials collected")
+        
+        if len(remaining_order) == 0:
+            # Last player: return all partials to requester
+            logger.info(f"🔄 Last player, returning {len(partial_results_b64)} partials to requester")
+            return {"partial_results": partial_results_b64}
+        
+        # Pass to next player with accumulated partials
+        next_index = remaining_order[0]
+        next_address = player_addresses[next_index]
+        new_remaining = remaining_order[1:]
+        
+        logger.info(f"🔄 Forwarding to next player at {next_address}, remaining: {new_remaining}")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{next_address}/relay_decrypt",
+                json={
+                    "ciphertext": ciphertext_b64,
+                    "partial_results": partial_results_b64,
+                    "remaining_order": new_remaining,
+                    "player_addresses": player_addresses
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            # If we're the requester and got partials back, do fusion decrypt
+            if "partial_results" in result:
+                from service.crypto.threshold_decryption import fusion_decrypt
+                from service.crypto.roles import NUM_ROLE_TYPES
+                
+                logger.info(f"🔄 Received {len(result['partial_results'])} partials, performing fusion decrypt")
+                all_partials = [deserialize_ciphertext(state.cc, p) for p in result["partial_results"]]
+                final_result = fusion_decrypt(state.cc, all_partials)
+                decrypted_vector = final_result.GetPackedValue()
+                logger.info(f"✅ Fusion decrypt complete: {decrypted_vector[:10]}...")
+                
+                # If this agent is police, show investigation result
+                if state.role == "police":
+                    is_mafia = sum(decrypted_vector[:NUM_ROLE_TYPES]) == 1
+                    logger.info("=" * 60)
+                    logger.info("🔍 POLICE INVESTIGATION RESULT")
+                    logger.info(f"   Target is: {'🎭 MAFIA' if is_mafia else '✅ NOT MAFIA'}")
+                    logger.info("=" * 60)
+                
+                return {"decrypted_vector": decrypted_vector}
+            
+            return result
+            
+    except Exception as e:
+        logger.error(f"❌ Relay decrypt error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/role_assignment")
 async def role_assignment(request: RoleAssignmentRequest):
     """
@@ -441,6 +527,9 @@ async def blind_role_assignment(request: dict):
         my_index = request["my_index"]
         encrypted_roles = request["encrypted_roles"]
         state.joint_public_key = deserialize_public_key(state.cc, request["joint_public_key"])
+        
+        # Store all encrypted roles for future use (e.g., police investigation)
+        state.all_encrypted_roles = encrypted_roles
         
         logger.info(f"🔐 Starting blind role decryption for player {my_index}")
         
@@ -489,12 +578,15 @@ async def complete_role_decryption(request: dict):
         
         # Fusion decrypt
         from service.crypto.threshold_decryption import fusion_decrypt
-        from service.crypto.roles import ROLE_ENCODING
+        from service.crypto.roles import ROLE_ENCODING, one_hot_to_role, NUM_ROLE_TYPES
         final_plaintext = fusion_decrypt(state.cc, partial_results)
-        decrypted_value = final_plaintext.GetPackedValue()[0]
-        my_role = next(role for role, code in ROLE_ENCODING.items() if code == decrypted_value)
+        decrypted_vector = final_plaintext.GetPackedValue()[:NUM_ROLE_TYPES]
+        my_role = one_hot_to_role(decrypted_vector)
         
         state.role = my_role.lower()
+        
+        # Store encrypted role for police investigation
+        state.encrypted_role_vector = state.my_encrypted_role
         
         # Initialize suspicion notes manager
         from suspicion import SuspicionNoteManager, PoliceNoteManager
@@ -515,6 +607,7 @@ async def complete_role_decryption(request: dict):
         logger.info(f"🎭 ROLE DECRYPTED BLINDLY | Player #{state.player_index}")
         logger.info(f"   Role: {state.role.upper()}")
         logger.info(f"   ✓ No one else knows my role!")
+        logger.info(f"   🔐 Encrypted role vector stored for investigation")
         logger.info(f"   🤖 AI Agent initialized")
         logger.info("━" * 60)
         
@@ -791,8 +884,26 @@ Do it NOW - no more analysis needed!"""
             elif state.role == "police":
                 attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
                 heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-                investigate_vec = real_vector
-                logger.info(f"🔍 Attack: DUMMY | Heal: DUMMY | Investigate: REAL → Player {state.pending_action_target}")
+                
+                # Police: Compute investigation result
+                # Get target's encrypted role vector
+                target_role_enc_b64 = state.all_encrypted_roles[state.pending_action_target]
+                target_role_enc = deserialize_ciphertext(state.cc, target_role_enc_b64)
+                
+                # Mafia check vector: [citizen=0, mafia=1, doctor=0, police=0]
+                from service.crypto.roles import NUM_ROLE_TYPES
+                from service.crypto.vector_operations import homomorphic_dot_product
+                mafia_check_vector = [0, 1, 0, 0]
+                
+                # Compute dot product: role_vector · mafia_check
+                # Result will be 1 if mafia, 0 otherwise
+                investigate_vec = homomorphic_dot_product(
+                    state.cc,
+                    target_role_enc,
+                    mafia_check_vector
+                )
+                
+                logger.info(f"🔍 Attack: DUMMY | Heal: DUMMY | Investigate: COMPUTED (Player {state.pending_action_target} role check)")
             else:  # citizen
                 attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
                 heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
@@ -855,6 +966,24 @@ async def receive_chat_message(request: dict):
     logger.info(f"[Agent] Chat history now has {len(state.chat_history.messages)} messages")
     
     return {"status": "ok"}
+
+
+@app.post("/get_encrypted_role_vector")
+async def get_encrypted_role_vector(request: dict):
+    """Return encrypted role vector for police investigation"""
+    try:
+        if state.encrypted_role_vector is None:
+            raise ValueError("Encrypted role vector not available")
+        
+        logger.info(f"🔍 Providing encrypted role vector for investigation")
+        
+        return {
+            "encrypted_role_vector": state.encrypted_role_vector,
+            "success": True
+        }
+    except Exception as e:
+        logger.error(f"❌ Get encrypted role vector error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================

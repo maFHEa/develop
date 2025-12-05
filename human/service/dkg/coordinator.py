@@ -105,8 +105,8 @@ class DKGCoordinator:
         self, 
         num_players: int, 
         ai_addresses: List[str]
-    ) -> str:
-        """Blind role 할당"""
+    ) -> tuple[str, str]:
+        """Blind role 할당 - returns (role, encrypted_role_vector)"""
         print("="*50)
         print(" Role Assignment (Blind Threshold Decryption)")
         print("="*50)
@@ -119,7 +119,7 @@ class DKGCoordinator:
         encrypted_roles = self.role_assigner.generate_encrypted_roles(
             num_players
         )
-        print(f"\n Encrypted {len(encrypted_roles)} roles")
+        print(f"\n✓ Encrypted {len(encrypted_roles)} roles")
         
         # Human role 복호화
         print("\n[You] Decrypting your role...")
@@ -136,7 +136,8 @@ class DKGCoordinator:
             partials,
             self.protocol.keypair
         )
-        print(f"\n Your role: {human_role.upper()}\n")
+        human_encrypted_role = encrypted_roles[0]  # Store for investigation
+        print(f"\n✓ Your role: {human_role.upper()}\n")
         
         # 에이전트들에게 role 분배
         joint_pk_b64 = serialize_public_key(
@@ -170,4 +171,4 @@ class DKGCoordinator:
         print("✓ All players received their roles blindly")
         print("="*50)
         
-        return human_role
+        return human_role, human_encrypted_role, encrypted_roles  # Return all encrypted roles

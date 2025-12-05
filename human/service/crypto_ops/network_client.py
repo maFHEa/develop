@@ -91,6 +91,33 @@ class AgentNetworkClient:
             print(f"[Network] Error getting partial decrypt from {player.name}: {e}")
             raise
     
+    async def request_relay_decrypt(
+        self,
+        player,
+        ciphertext_b64: str,
+        remaining_order: List[int],
+        player_addresses: List[str]
+    ) -> dict:
+        """릴레이 복호화 요청"""
+        try:
+            async with httpx.AsyncClient(
+                timeout=NETWORK_CONFIG["connection_timeout"] * 2
+            ) as client:
+                response = await client.post(
+                    f"{player.address}/relay_decrypt",
+                    json={
+                        "ciphertext": ciphertext_b64,
+                        "partial_results": [],  # Start with empty list
+                        "remaining_order": remaining_order,
+                        "player_addresses": player_addresses
+                    }
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception as e:
+            print(f"[Network] Error in relay decrypt from {player.name}: {e}")
+            raise
+    
     async def collect_partial_decryptions(
         self,
         players,
@@ -105,3 +132,42 @@ class AgentNetworkClient:
                 )
         
         return await asyncio.gather(*tasks)
+    
+    async def collect_encrypted_role_vectors(
+        self,
+        players
+    ) -> List[str]:
+        """Collect encrypted role vectors from all AI agents for police investigation"""
+        tasks = []
+        ai_players = [p for p in players if not p.is_human and p.alive]
+        
+        for player in ai_players:
+            tasks.append(self._request_encrypted_role_vector(player))
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Build complete list with None for failed requests
+        role_vectors = [None] * len(players)
+        for i, (player, result) in enumerate(zip(ai_players, results)):
+            if not isinstance(result, Exception):
+                role_vectors[player.index] = result
+            else:
+                print(f"[Network] Agent {player.name} failed to provide role vector: {result}")
+        
+        return role_vectors
+    
+    async def _request_encrypted_role_vector(self, player) -> str:
+        """Request encrypted role vector from an agent"""
+        try:
+            async with httpx.AsyncClient(
+                timeout=NETWORK_CONFIG["connection_timeout"]
+            ) as client:
+                response = await client.post(
+                    f"{player.address}/get_encrypted_role_vector",
+                    json={}
+                )
+                response.raise_for_status()
+                return response.json()["encrypted_role_vector"]
+        except Exception as e:
+            print(f"[Network] Error getting role vector from {player.name}: {e}")
+            raise

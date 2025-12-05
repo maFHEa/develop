@@ -7,12 +7,14 @@ from typing import List, Optional
 
 sys.path.append('../agent')
 
-from service.crypto.serialization import deserialize_ciphertext
+from service.crypto.serialization import deserialize_ciphertext, serialize_ciphertext
 from service.crypto.vector_operations import (
     aggregate_encrypted_vectors,
     compute_killed_vector,
     multiply_encrypted_vectors,
+    homomorphic_dot_product,
 )
+from service.crypto.roles import NUM_ROLE_TYPES
 
 
 class GamePhases:
@@ -112,20 +114,61 @@ class GamePhases:
 
     async def _handle_police_investigation(self, investigations_enc, players, human_player_index, human_role):
         """
-        Police investigation using encrypted role vectors.
+        Police investigation using relay decryption (ONLY POLICE SEES RESULT).
         
-        BLIND: Server aggregates all investigate_vectors to find which player was investigated.
-        Then computes dot product with each player's encrypted_role_vector.
-        Result > 0 means investigated player is mafia.
+        NEW Protocol (Client-side computation):
+        1. Each player computes their investigation result:
+           - Police: role_vector[target] · mafia_check → encrypted result
+           - Others: zero vector → encrypted 0
+        2. Server aggregates all encrypted results (sum)
+        3. Relay decrypt: only one player (first alive) gets the result
+        4. That player is the police and sees the result
         
-        Note: Currently cannot work without encrypted_role_vector
+        Security:
+        - Server doesn't know who is police
+        - Server doesn't know investigation result
+        - Only police sees final result
+        
+        NOTE: This is a PLACEHOLDER - clients must compute dot products!
         """
-        # TODO: Implement with encrypted role vectors
-        # For now, skip investigation as we don't have encrypted_role_vector
-        if human_role == "police":
-            print(f"\n[POLICE INVESTIGATION]")
-            print(f"Result: Investigation not implemented in blind mode yet")
-            print(f"[This feature requires encrypted role vectors]")
+        print("[Engine] Processing police investigations (relay decrypt)...")
+        
+        # Aggregate all investigation results (each player sent encrypted result)
+        # Police sent: Enc(role · mafia_check), others sent: Enc(0)
+        total_result_enc = aggregate_encrypted_vectors(self.crypto_ops.cc, investigations_enc)
+        
+        # Serialize for relay decryption
+        total_result_b64 = serialize_ciphertext(self.crypto_ops.cc, total_result_enc)
+        
+        # Relay decrypt to first alive player (who should be police if they sent non-zero)
+        first_alive_index = None
+        for i, player in enumerate(players):
+            if player.alive:
+                first_alive_index = i
+                break
+        
+        if first_alive_index is None:
+            print("[Engine] No alive players for investigation!")
+            return
+        
+        # RELAY DECRYPT: Result goes to first alive player (assumes they are police)
+        # TODO: Better way to ensure result goes to police
+        result_vector = await self.crypto_ops.decryption_service.relay_decrypt(
+            total_result_b64,
+            first_alive_index,
+            players
+        )
+        
+        # Check if human player is police and show result
+        if players[0].role == "police" and players[0].alive:
+            from agent.service.crypto.roles import NUM_ROLE_TYPES
+            is_mafia = sum(result_vector[:NUM_ROLE_TYPES]) == 1
+            print("=" * 60)
+            print("🔍 POLICE INVESTIGATION RESULT (You are the police!)")
+            print(f"   Target is: {'🎭 MAFIA' if is_mafia else '✅ NOT MAFIA'}")
+            print("=" * 60)
+        else:
+            print("[Engine] Investigation result sent to police agent")
 
     def _announce_night_results(self, players, log_callback):
         """Announce night phase results"""

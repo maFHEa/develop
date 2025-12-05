@@ -94,7 +94,7 @@ class MafiaGameApp(App):
         # Create game engine
         loading_screen.add_status("Creating game engine...", "yellow")
         await asyncio.sleep(0.3)
-        self.game_engine = GameEngine()
+        self.game_engine = GameEngine(http_port=9000)
         loading_screen.add_status("✓ Game engine created", "green")
         
         # Generate game ID

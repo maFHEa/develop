@@ -6,6 +6,8 @@ import asyncio
 import sys
 from typing import List, Optional
 import httpx
+import threading
+import uvicorn
 
 from service.dkg.coordinator import DKGCoordinator
 from service.crypto_ops import CryptoOperations
@@ -22,7 +24,7 @@ from chat import GameChatHistory
 class GameEngine:
     """Main game engine - orchestrates DKG, phases, and player management"""
 
-    def __init__(self):
+    def __init__(self, http_port: int = 9000):
         self.game_id: Optional[str] = None
         self.players: List[Player] = []
         self.num_players = 0
@@ -38,6 +40,11 @@ class GameEngine:
         self.pending_human_action: Optional[int] = None
         self.human_action_ready = False
         
+        # HTTP server
+        self.http_port = http_port
+        self.http_address = f"http://localhost:{http_port}"
+        self.http_server_thread = None
+        
         # Managers (initialized during setup)
         self.dkg_coordinator: Optional[DKGCoordinator] = None
         self.crypto_ops: Optional[CryptoOperations] = None
@@ -47,6 +54,20 @@ class GameEngine:
     # ========================================================================
     # Game Setup
     # ========================================================================
+
+    def _start_http_server(self, cc, keypair, role):
+        """Start HTTP server in background thread"""
+        from http_server import app, initialize_server
+        
+        # Initialize server state
+        initialize_server(cc, keypair, role)
+        
+        def run_server():
+            uvicorn.run(app, host="0.0.0.0", port=self.http_port, log_level="warning")
+        
+        self.http_server_thread = threading.Thread(target=run_server, daemon=True)
+        self.http_server_thread.start()
+        print(f"[Engine] HTTP server started at {self.http_address}")
 
     async def setup_game(self, num_ai_agents: int, ai_addresses: List[str], game_id: str):
         """
@@ -67,18 +88,23 @@ class GameEngine:
         )
 
         # Assign roles blindly
-        self.human_role = await self.dkg_coordinator.assign_roles_blindly(
+        self.human_role, human_encrypted_role, all_encrypted_roles = await self.dkg_coordinator.assign_roles_blindly(
             self.num_players, ai_addresses
         )
         self.logger.log(f"Human assigned role: {self.human_role}")
 
+        # Start HTTP server in background
+        self._start_http_server(cc, keypair, self.human_role)
+
         # Create players
-        self.players.append(Player(0, is_human=True))
+        self.players.append(Player(0, is_human=True, address=self.http_address))
         for i, address in enumerate(ai_addresses):
             self.players.append(Player(i + 1, is_human=False, address=address))
 
         # Initialize crypto operations manager
         self.crypto_ops = CryptoOperations(cc, keypair, joint_pk, self.num_players)
+        self.crypto_ops.human_encrypted_role = human_encrypted_role  # Store for investigation
+        self.crypto_ops.update_encrypted_roles(all_encrypted_roles)  # Update vector factory
         
         # Initialize game phases manager with logger
         self.game_phases = GamePhases(self.crypto_ops, self.logger)
@@ -346,6 +372,21 @@ class GameEngine:
 
         self.log_message(f"Game ended. Winner: {winner}")
         await self.broadcast_update("end", f"Game over! {winner} wins!")
+    
+    async def relay_decrypt_for_player(
+        self,
+        ciphertext_b64: str,
+        requester_index: int
+    ) -> List[int]:
+        """
+        Relay decryption: requester sends encrypted data, others decrypt sequentially.
+        Used for police investigation where only the police should see the result.
+        """
+        return await self.crypto_ops.decryption_service.relay_decrypt(
+            ciphertext_b64,
+            requester_index,
+            self.players
+        )
 
 
 # ============================================================================
