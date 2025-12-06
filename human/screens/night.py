@@ -123,6 +123,7 @@ class NightScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Footer()
 
         # 클릭 가능한 플레이어 상태바
         can_select = self.is_human_alive and self.human_role in ["mafia", "doctor", "police"]
@@ -143,8 +144,14 @@ class NightScreen(Screen):
             with Vertical(id="night_panel"):
                 # 역할에 따른 타이틀
                 icon = self._get_role_icon()
-                role_display = self.human_role.upper() if self.human_role else "CITIZEN"
-                yield Label(f"{icon}  {role_display} ACTION  {icon}", id="night_title")
+                role_names = {
+                    "mafia": "마피아",
+                    "doctor": "의사",
+                    "police": "경찰",
+                    "citizen": "시민"
+                }
+                role_display = role_names.get(self.human_role, "시민") if self.human_role else "시민"
+                yield Label(f"{icon}  {role_display} 행동  {icon}", id="night_title")
 
                 if self.is_human_alive and self.human_role in ["mafia", "doctor", "police"]:
                     yield Label(self._get_role_action(), id="night_instructions")
@@ -160,8 +167,6 @@ class NightScreen(Screen):
                         yield Label("😴 당신은 자고 있습니다. 밤이 끝나길 기다리세요.", id="night_instructions")
 
                 yield RichLog(id="night_log", highlight=True, markup=True)
-
-        yield Footer()
 
     async def on_mount(self) -> None:
         """Initialize night screen"""

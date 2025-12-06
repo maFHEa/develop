@@ -18,11 +18,12 @@ class VictimCard(Static):
     DEFAULT_CSS = """
     VictimCard {
         width: 40;
-        height: 12;
+        height: auto;
         background: $error 10%;
         border: heavy $error;
         content-align: center middle;
-        margin: 1;
+        margin: 0 1;
+        padding: 1;
     }
 
     VictimCard.fade-in {
@@ -34,11 +35,12 @@ class VictimCard(Static):
     }
     """
 
-    def __init__(self, player_index: int, player_name: str, cause: str = "killed", **kwargs):
+    def __init__(self, player_index: int, player_name: str, cause: str = "killed", role: str = None, **kwargs):
         super().__init__(**kwargs)
         self.player_index = player_index
         self.player_name = player_name
         self.cause = cause  # "killed" (야간) or "voted_out" (투표)
+        self.role = role  # 공개된 역할
 
     def on_mount(self) -> None:
         if self.cause == "killed":
@@ -48,16 +50,14 @@ class VictimCard(Static):
             icon = "🗳️"
             title = "처형됨"
 
-        content = f"""
-{icon}  {title}  {icon}
+        # 역할 표시
+        role_display = ""
+        if self.role:
+            role_icon = {"mafia": "🔪", "doctor": "💉", "police": "🔍", "citizen": "👤"}.get(self.role, "❓")
+            role_name = {"mafia": "마피아", "doctor": "의사", "police": "경찰", "citizen": "시민"}.get(self.role, self.role)
+            role_display = f" | {role_icon} {role_name}"
 
-━━━━━━━━━━━━━━━━━━━━
-
-💀 플레이어 {self.player_index}
-{self.player_name}
-
-━━━━━━━━━━━━━━━━━━━━
-"""
+        content = f"{icon} {title} {icon}\n💀 P{self.player_index} {self.player_name}{role_display}"
         self.update(content)
 
 
@@ -75,16 +75,19 @@ class DeathAnnouncementScreen(Screen):
 
     #announcement_container {
         width: 100%;
-        height: 1fr;
+        height: 100%;
         align: center middle;
+        padding: 1;
     }
 
     #main_panel {
         width: 60;
         height: auto;
+        max-height: 80%;
         background: $surface-darken-1;
         border: double $primary;
         padding: 2;
+        align: center middle;
     }
 
     .phase_title {
@@ -92,7 +95,7 @@ class DeathAnnouncementScreen(Screen):
         text-align: center;
         text-style: bold;
         color: $warning;
-        margin-bottom: 2;
+        margin-bottom: 1;
     }
 
     .subtitle {
@@ -106,7 +109,7 @@ class DeathAnnouncementScreen(Screen):
         width: 100%;
         height: auto;
         align: center middle;
-        margin: 2 0;
+        margin: 1 0;
     }
 
     .no_death {
@@ -114,14 +117,14 @@ class DeathAnnouncementScreen(Screen):
         text-align: center;
         color: $success;
         text-style: bold;
-        padding: 2;
+        padding: 1;
     }
 
     #continue_hint {
         width: 100%;
         text-align: center;
         color: $text-muted;
-        margin-top: 2;
+        margin-top: 1;
     }
 
     .phase_title.sunrise {
@@ -148,6 +151,7 @@ class DeathAnnouncementScreen(Screen):
         human_index: int = 0,
         human_role: str = "citizen",
         auto_continue_seconds: int = 5,  # 자동 진행 시간
+        victim_roles: dict = None,  # {player_index: role} 사망자 역할 정보
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -158,11 +162,13 @@ class DeathAnnouncementScreen(Screen):
         self.human_index = human_index
         self.human_role = human_role
         self.auto_continue_seconds = auto_continue_seconds
+        self.victim_roles = victim_roles or {}
         self.should_continue = False
         self.continue_event = asyncio.Event()
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Footer()
 
         # 상단 플레이어 상태바 (사망자 반영된 상태)
         if self.phase_type == "night":
@@ -198,10 +204,12 @@ class DeathAnnouncementScreen(Screen):
                                 {"index": victim_idx, "name": f"Player {victim_idx}"}
                             )
                             cause = "killed" if self.phase_type == "night" else "voted_out"
+                            victim_role = self.victim_roles.get(victim_idx)
                             yield VictimCard(
                                 player_index=victim_idx,
                                 player_name=player_info["name"],
                                 cause=cause,
+                                role=victim_role,
                                 id=f"victim_{victim_idx}"
                             )
                     else:
@@ -211,8 +219,6 @@ class DeathAnnouncementScreen(Screen):
                             yield Static("🤝 처형된 사람이 없습니다.", classes="no_death")
 
                 yield Static("[Enter] 또는 [Space]를 눌러 계속...", id="continue_hint")
-
-        yield Footer()
 
     async def on_mount(self) -> None:
         """마운트 시 자동 진행 타이머 시작"""
@@ -257,6 +263,49 @@ class DeathAnnouncementScreen(Screen):
         # Note: dismiss()를 호출하지 않음 - app.py에서 pop_screen()으로 처리
 
 
+class PoliceInvestigationCard(Static):
+    """경찰 조사 결과 카드"""
+
+    DEFAULT_CSS = """
+    PoliceInvestigationCard {
+        width: 45;
+        height: auto;
+        background: $primary 10%;
+        border: heavy $primary;
+        content-align: center middle;
+        margin: 0 1 1 1;
+        padding: 1;
+    }
+
+    PoliceInvestigationCard.mafia {
+        background: $error 15%;
+        border: heavy $error;
+    }
+
+    PoliceInvestigationCard.not-mafia {
+        background: $success 15%;
+        border: heavy $success;
+    }
+    """
+
+    def __init__(self, target_index: int, target_name: str, is_mafia: bool, **kwargs):
+        super().__init__(**kwargs)
+        self.target_index = target_index
+        self.target_name = target_name
+        self.is_mafia = is_mafia
+
+    def on_mount(self) -> None:
+        if self.is_mafia:
+            self.add_class("mafia")
+            result_text = "🔪 마피아!"
+        else:
+            self.add_class("not-mafia")
+            result_text = "✅ 마피아 아님"
+
+        content = f"🔍 조사결과: P{self.target_index} {self.target_name}\n{result_text}"
+        self.update(content)
+
+
 class NightResultScreen(DeathAnnouncementScreen):
     """야간 결과 발표 스크린 (별칭)"""
 
@@ -267,6 +316,8 @@ class NightResultScreen(DeathAnnouncementScreen):
         players: List[dict],
         human_index: int = 0,
         human_role: str = "citizen",
+        victim_roles: dict = None,
+        investigation_result: dict = None,  # {"target": int, "is_mafia": bool}
         **kwargs
     ):
         super().__init__(
@@ -276,8 +327,68 @@ class NightResultScreen(DeathAnnouncementScreen):
             players=players,
             human_index=human_index,
             human_role=human_role,
+            victim_roles=victim_roles,
             **kwargs
         )
+        self.investigation_result = investigation_result
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Footer()
+
+        title = f"🌅 Dawn of Day {self.day_number}"
+
+        yield PlayerStatusBar(
+            players=self.players,
+            human_index=self.human_index,
+            human_role=self.human_role,
+            show_human_role=True,
+            title=title,
+            id="player_bar"
+        )
+
+        with Container(id="announcement_container"):
+            with Vertical(id="main_panel"):
+                yield Static("🌅 밤이 끝났습니다", classes="phase_title sunrise")
+
+                # 경찰 조사 결과 표시 (human이 경찰이고 조사했을 경우)
+                if self.investigation_result and self.human_role == "police":
+                    target_idx = self.investigation_result.get("target")
+                    is_mafia = self.investigation_result.get("is_mafia", False)
+                    target_info = next(
+                        (p for p in self.players if p["index"] == target_idx),
+                        {"index": target_idx, "name": f"Player {target_idx}"}
+                    )
+                    with Center():
+                        yield PoliceInvestigationCard(
+                            target_index=target_idx,
+                            target_name=target_info["name"],
+                            is_mafia=is_mafia,
+                            id="investigation_result"
+                        )
+
+                yield Static("마을이 깨어나 확인한 것은...", classes="subtitle")
+
+                # 사망자 표시
+                with Center(id="victim_container"):
+                    if self.victims:
+                        for victim_idx in self.victims:
+                            player_info = next(
+                                (p for p in self.players if p["index"] == victim_idx),
+                                {"index": victim_idx, "name": f"Player {victim_idx}"}
+                            )
+                            victim_role = self.victim_roles.get(victim_idx)
+                            yield VictimCard(
+                                player_index=victim_idx,
+                                player_name=player_info["name"],
+                                cause="killed",
+                                role=victim_role,
+                                id=f"victim_{victim_idx}"
+                            )
+                    else:
+                        yield Static("✨ 오늘 밤 희생자가 없습니다! ✨", classes="no_death")
+
+                yield Static("[Enter] 또는 [Space]를 눌러 계속...", id="continue_hint")
 
 
 class VoteResultsPanel(Static):
@@ -346,6 +457,7 @@ class VoteResultScreen(DeathAnnouncementScreen):
         vote_counts: Optional[List[int]] = None,  # 각 플레이어별 득표수
         human_index: int = 0,
         human_role: str = "citizen",
+        victim_roles: dict = None,
         **kwargs
     ):
         victims = [voted_out_player] if voted_out_player is not None else []
@@ -356,6 +468,7 @@ class VoteResultScreen(DeathAnnouncementScreen):
             players=players,
             human_index=human_index,
             human_role=human_role,
+            victim_roles=victim_roles,
             **kwargs
         )
         self.vote_counts = vote_counts
@@ -363,6 +476,7 @@ class VoteResultScreen(DeathAnnouncementScreen):
     def compose(self) -> ComposeResult:
         # 기본 compose 호출 전에 투표 결과 표시 추가
         yield Header()
+        yield Footer()
 
         title = f"⚖️ Day {self.day_number} - Judgement"
 
@@ -398,15 +512,15 @@ class VoteResultScreen(DeathAnnouncementScreen):
                                 (p for p in self.players if p["index"] == victim_idx),
                                 {"index": victim_idx, "name": f"플레이어 {victim_idx}"}
                             )
+                            victim_role = self.victim_roles.get(victim_idx)
                             yield VictimCard(
                                 player_index=victim_idx,
                                 player_name=player_info["name"],
                                 cause="voted_out",
+                                role=victim_role,
                                 id=f"victim_{victim_idx}"
                             )
                     else:
                         yield Static("🤝 처형된 사람이 없습니다.", classes="no_death")
 
                 yield Static("[Enter] 또는 [Space]를 눌러 계속...", id="continue_hint")
-
-        yield Footer()

@@ -70,6 +70,7 @@ class ChatScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Footer()
 
         # 상단 플레이어 상태바
         day_num = self.game_engine.game_phases.day_number if self.game_engine.game_phases else 0
@@ -88,8 +89,6 @@ class ChatScreen(Screen):
         # Input
         with Horizontal(id="input_container"):
             yield Input(placeholder="메시지를 입력하세요... (Ctrl+D로 진행)", id="chat_input")
-
-        yield Footer()
 
     async def on_mount(self) -> None:
         """Initialize chat screen"""
@@ -146,10 +145,9 @@ class ChatScreen(Screen):
         # Clear input
         event.input.value = ""
 
-        # Display own message with player color
+        # Display own message with player color and send status
         chat = self.query_one("#chat_display", RichLog)
         human_color = get_player_color(self.game_engine.human_player_index)
-        chat.write(Text(f"[You] {message}", style=f"bold {human_color}"))
 
         try:
             # Send to game engine (this adds message to chat_history)
@@ -164,9 +162,15 @@ class ChatScreen(Screen):
                 latest_msg = self.game_engine.chat_history.messages[-1]
                 self.game_engine.last_displayed_msg_id = latest_msg.msg_id
 
-            chat.write(Text("✓ 메시지 전송됨", style="dim green"))
+            # 메시지와 성공 표시를 같은 줄에
+            msg_text = Text(f"[나] {message} ", style=f"bold {human_color}")
+            msg_text.append("✓", style="green")
+            chat.write(msg_text)
         except Exception as e:
-            chat.write(Text(f"❌ 전송 실패: {e}", style="red"))
+            # 메시지와 실패 표시를 같은 줄에
+            msg_text = Text(f"[나] {message} ", style=f"bold {human_color}")
+            msg_text.append("✗", style="red")
+            chat.write(msg_text)
 
     async def _check_messages(self) -> None:
         """Background task to check for new messages from chat history and agents"""

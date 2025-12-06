@@ -4,7 +4,9 @@ Agent creation, function tools, and prompts
 """
 import logging
 import os
-from typing import Annotated, Optional
+import random
+import hashlib
+from typing import Annotated, Optional, List, Dict
 from agents import Agent, function_tool
 
 # Configure logger for agent_logic module
@@ -19,6 +21,241 @@ if not logger.handlers:
     formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
     handler.setFormatter(formatter)
     logger.addHandler(handler)
+
+
+# ============================================================================
+# Personality System - 각 에이전트에게 고유한 성격 부여
+# ============================================================================
+
+PERSONALITY_TRAITS = {
+    "communication_style": [
+        "직설적이고 단도직입적",
+        "조용하고 관찰하는 스타일",
+        "수다스럽고 활발함",
+        "논리적이고 분석적",
+        "감정적이고 직관적",
+        "냉소적이고 의심 많음",
+        "친근하고 사교적",
+        "신중하고 조심스러움",
+    ],
+    "reaction_patterns": [
+        "위기 상황에서 침착함",
+        "공격받으면 격하게 반응",
+        "유머로 상황을 넘기려 함",
+        "팩트 체크하며 반박",
+        "질문으로 되묻기",
+        "남 탓하며 회피",
+    ],
+    "speech_habits": [
+        "말 끝을 흐림 (...)",
+        "강조어 많이 씀 (진짜, 마, 완전)",
+        "이모티콘/ㅋㅋ 자주 씀",
+        "반어법 즐겨 씀",
+        "짧게 끊어서 말함",
+        "한 번에 길게 말함",
+    ],
+    "strategic_tendency": [
+        "적극적으로 의심하고 몰아붙임",
+        "수비적으로 살피다가 확신 있을 때만 발언",
+        "동맹을 만들려고 시도",
+        "여론 흐름을 따라감",
+        "독자적 판단 고수",
+        "상대 심리 읽으려 함",
+    ]
+}
+
+# 실제 사람들이 쓰는 다양한 한국어 표현들
+SPEECH_PATTERNS = {
+    "direct": {  # 직설적
+        "agree": ["ㅇㅇ", "맞음", "인정", "그거임", "팩트"],
+        "disagree": ["아닌데", "ㄴㄴ", "아님", "그건 아니지", "뭔 소리야"],
+        "suspect": ["얘 수상함", "걔 마피아임", "확실함", "봐봐 걔가", "딱봐도"],
+        "defend": ["내가 왜", "아 진짜 아닌데", "증거 있음?", "그럼 난 뭐"],
+        "question": ["왜?", "근거가?", "그래서?", "어떻게 아는데"],
+        "filler": ["그래서", "근데", "암튼", "어쨌든"],
+    },
+    "quiet": {  # 조용한
+        "agree": ["음...", "그런가", "...그렇네", "..."],
+        "disagree": ["글쎄", "..아닌것같은데", "모르겠는데"],
+        "suspect": ["좀 이상한듯", "...의심됨", "뭔가"],
+        "defend": ["..난 아닌데", "음...", "그냥"],
+        "question": ["왜..?", "어떻게?", "...뭐지"],
+        "filler": ["음", "...", "그게", "뭐랄까"],
+    },
+    "chatty": {  # 수다쟁이
+        "agree": ["아 ㅋㅋ 맞아맞아", "완전 인정ㅋㅋ", "그니까요~", "ㅇㅈㅇㅈ"],
+        "disagree": ["엥 아닌데ㅋㅋ", "ㄴㄴㄴㄴ", "아 그건 좀ㅋㅋ", "에이~"],
+        "suspect": ["야 진짜 걔 수상해ㅋㅋ", "걔 마피아 아님? ㅋㅋ", "봐봐 ㅋㅋㅋ"],
+        "defend": ["아니 진짜ㅋㅋ 왜 나한테 그래", "헐 억울해ㅋㅋ", "에이 아니라니까~"],
+        "question": ["헐 왜왜왜?", "ㅋㅋ 어떻게?", "진짜?? 왜??"],
+        "filler": ["아ㅋㅋ", "근데요~", "그게요~", "헐"],
+    },
+    "logical": {  # 논리적
+        "agree": ["동의함", "논리적임", "맞는 말임", "그게 합리적"],
+        "disagree": ["근거 없음", "논리가 안 맞음", "그건 비약임"],
+        "suspect": ["정황상 의심됨", "행동 패턴이 수상함", "일관성이 없음"],
+        "defend": ["근거를 제시해라", "논리적으로 반박할게", "팩트 기반으로 얘기하자"],
+        "question": ["근거가 뭔데?", "왜 그렇게 생각?", "논리를 설명해"],
+        "filler": ["즉", "따라서", "정리하면", "분석해보면"],
+    },
+    "emotional": {  # 감정적
+        "agree": ["아 맞아!!!", "진짜그래ㅠㅠ", "완전 공감", "그니까!!!"],
+        "disagree": ["아 진짜 아닌데ㅠ", "너무해ㅠ", "왜그래ㅠㅠ"],
+        "suspect": ["느낌이 이상해...", "뭔가 찝찝해", "직감이 그래"],
+        "defend": ["진짜 억울해ㅠㅠ", "왜 나만 그래", "너무한다ㅠ"],
+        "question": ["왜 그런 거야ㅠ", "진심으로?", "어떻게 그럴 수 있어"],
+        "filler": ["아...", "헐...", "대박...", "진짜..."],
+    },
+    "cynical": {  # 냉소적
+        "agree": ["뭐 그렇겠지", "당연한 거 아님?", "예상함"],
+        "disagree": ["또 시작이네", "뻔함", "그럴 리가"],
+        "suspect": ["어차피 걔겠지", "뻔히 보임", "마피아 티남"],
+        "defend": ["뭐 어쩌라고", "니들이 뭘 알아", "증거나 가져와"],
+        "question": ["그래서?", "어쩌라고", "근데 왜?"],
+        "filler": ["뭐", "어차피", "그래봤자", "뭐 어쨌든"],
+    },
+}
+
+# 상황별 반응 템플릿
+REACTION_TEMPLATES = {
+    "accused_innocent": [
+        "아 진짜 난 아닌데... 왜 나한테 그래",
+        "헐 갑자기 왜 나야",
+        "뭐? 난 시민인데",
+        "아니 근거가 뭔데",
+        "왜 나를 의심하는건데",
+        "진짜 억울하다",
+        "말이 됨? 나보고 마피아라고?",
+    ],
+    "accused_mafia": [  # 마피아인데 의심받을 때
+        "아 뭔소리야 난 시민이야",
+        "갑자기? 근거가 뭔데",
+        "아니야... 다른 사람 봐봐",
+        "왜 나한테 그래 진짜",
+        "어이없네 증거 있어?",
+    ],
+    "someone_died": [
+        "헐 누가 죽었어",
+        "앗... 밤사이에",
+        "마피아 미쳤네",
+        "누구지 범인이",
+        "이거 심각한데",
+    ],
+    "first_day": [
+        "일단 지켜보자",
+        "아직 정보가 없어서...",
+        "첫날은 어려운듯",
+        "누가 마피아일까",
+        "흠...",
+    ],
+    "vote_tie": [
+        "다시 투표해야겠네",
+        "의견이 갈리네",
+        "확실한 게 없어서 그런가",
+    ],
+    "defending_someone": [
+        "걔는 아닌 것 같은데",
+        "그 사람 시민 같음",
+        "다른 사람이 더 의심됨",
+    ],
+}
+
+
+def generate_personality(player_index: int, game_id: str = "") -> Dict:
+    """플레이어 인덱스와 게임 ID를 기반으로 일관된 성격 생성"""
+    # 같은 플레이어는 같은 게임에서 같은 성격을 갖도록 시드 설정
+    seed_str = f"{game_id}_{player_index}"
+    seed = int(hashlib.md5(seed_str.encode()).hexdigest()[:8], 16)
+    rng = random.Random(seed)
+
+    # 성격 특성 선택
+    personality = {
+        "communication": rng.choice(PERSONALITY_TRAITS["communication_style"]),
+        "reaction": rng.choice(PERSONALITY_TRAITS["reaction_patterns"]),
+        "speech_habit": rng.choice(PERSONALITY_TRAITS["speech_habits"]),
+        "strategy": rng.choice(PERSONALITY_TRAITS["strategic_tendency"]),
+    }
+
+    # 말투 스타일 결정 (communication style 기반)
+    comm = personality["communication"]
+    if "직설" in comm:
+        personality["speech_style"] = "direct"
+    elif "조용" in comm or "관찰" in comm:
+        personality["speech_style"] = "quiet"
+    elif "수다" in comm or "활발" in comm:
+        personality["speech_style"] = "chatty"
+    elif "논리" in comm or "분석" in comm:
+        personality["speech_style"] = "logical"
+    elif "감정" in comm or "직관" in comm:
+        personality["speech_style"] = "emotional"
+    elif "냉소" in comm or "의심" in comm:
+        personality["speech_style"] = "cynical"
+    else:
+        personality["speech_style"] = rng.choice(list(SPEECH_PATTERNS.keys()))
+
+    # 활동성 레벨 (1-5)
+    personality["activity_level"] = rng.randint(2, 5)
+
+    # 의심 성향 (1-5, 높을수록 의심 많음)
+    personality["suspicion_tendency"] = rng.randint(1, 5)
+
+    return personality
+
+
+def get_personality_prompt(personality: Dict, role: str) -> str:
+    """성격 기반 행동 가이드라인 생성"""
+    style = personality.get("speech_style", "direct")
+    patterns = SPEECH_PATTERNS.get(style, SPEECH_PATTERNS["direct"])
+
+    examples = []
+    for category, phrases in patterns.items():
+        if phrases:
+            examples.append(f"- {category}: {', '.join(phrases[:3])}")
+
+    prompt = f"""
+=== 너의 성격 & 말투 ===
+• 성격: {personality['communication']}
+• 반응 패턴: {personality['reaction']}
+• 말버릇: {personality['speech_habit']}
+• 전략 성향: {personality['strategy']}
+
+=== 말투 예시 ===
+{chr(10).join(examples)}
+
+=== 행동 가이드 ===
+• 너의 성격대로 일관되게 행동해
+• 위 예시를 참고하되 기계적으로 복붙하지 마
+• 상황에 맞게 자연스럽게 변형해서 써
+• 너무 정형화된 표현은 피해
+• 사람마다 말투가 다르듯이 너만의 스타일 유지
+"""
+
+    # 역할별 추가 가이드
+    if role == "mafia":
+        prompt += """
+=== 마피아 전용 ===
+• 절대 티내지 마 - 자연스럽게 시민인 척 해
+• 다른 사람 의심하면서 자연스럽게 물타기
+• 너무 조용하면 의심받고, 너무 나서도 의심받음
+• 밤에 죽인 사람 얘기 나오면 자연스럽게 반응해
+• 다른 마피아 있으면 티 안나게 도와줘
+"""
+    elif role == "doctor":
+        prompt += """
+=== 의사 전용 ===
+• 역할 들키면 마피아한테 죽음 - 절대 비밀
+• 누구 살렸는지도 비밀로 해
+• 경찰처럼 확신있게 말하면 안됨
+"""
+    elif role == "police":
+        prompt += """
+=== 경찰 전용 ===
+• 조사 결과 바로 말하면 죽음 - 타이밍 중요
+• 확실할 때만 조심스럽게 흘려
+• 역할 들키지 않게 조심
+"""
+
+    return prompt
 
 
 # ============================================================================
@@ -519,77 +756,77 @@ def create_agent_tools(state, phase: str = "setup"):
 # ============================================================================
 
 def get_role_instructions(role: str, player_index: int) -> str:
-    """Get role-specific instructions for the agent."""
+    """역할별 간단한 설명 (성격과 분리)"""
     role_instructions = {
         "mafia": (
-            f"You are Player {player_index}, a MAFIA member.\n"
-            f"🎯 WIN CONDITION: Mafia wins when mafia members ≥ living citizens\n"
-            f"🌙 NIGHT ACTION: Use submit_night_action(target) to KILL a citizen\n"
-            f"💀 STRATEGY: Blend in, deflect suspicion, eliminate threats\n"
-            f"🎲 TARGET SELECTION: DON'T always pick the same target! Vary your choices strategically:\n"
-            f"  - Prioritize vocal players who lead discussions\n"
-            f"  - Target players who seem intelligent or analytical\n"
-            f"  - Eliminate players who suspected you or other mafia\n"
-            f"  - Consider who the doctor might protect\n"
-            f"⚠️ CRITICAL: During the day, pretend to be a citizen. NEVER reveal you are mafia!"
+            f"너는 Player {player_index}, 마피아야.\n"
+            f"승리 조건: 마피아 수 ≥ 시민 수\n"
+            f"밤에: submit_night_action(target)으로 죽일 사람 선택\n"
+            f"핵심: 시민인 척 하면서 살아남아"
         ),
         "doctor": (
-            f"You are Player {player_index}, a DOCTOR (citizen team).\n"
-            f"🎯 WIN CONDITION: Citizens win when ALL mafia are eliminated\n"
-            f"🌙 NIGHT ACTION: Use submit_night_action(target) to SAVE someone from mafia attack\n"
-            f"💡 TIP: You can save yourself! If mafia attack your target, they survive\n"
-            f"🤫 STRATEGY: Hide your role, save key players"
+            f"너는 Player {player_index}, 의사야.\n"
+            f"승리 조건: 마피아 전멸\n"
+            f"밤에: submit_night_action(target)으로 살릴 사람 선택\n"
+            f"자기 자신도 살릴 수 있어"
         ),
         "police": (
-            f"You are Player {player_index}, a POLICE officer (citizen team).\n"
-            f"🎯 WIN CONDITION: Citizens win when ALL mafia are eliminated\n"
-            f"🌙 NIGHT ACTION: Use submit_night_action(target) to INVESTIGATE if they are mafia\n"
-            f"🔍 RESULT: Private - only you will learn if target is MAFIA or NOT MAFIA\n"
-            f"💡 TIP: Use record_investigation_result() to save findings\n"
-            f"🤫 STRATEGY: Investigate suspects, share findings carefully to avoid being killed"
+            f"너는 Player {player_index}, 경찰이야.\n"
+            f"승리 조건: 마피아 전멸\n"
+            f"밤에: submit_night_action(target)으로 조사 - 마피아인지 아닌지 바로 알려줌\n"
+            f"조사 결과는 신중하게 공유해"
         ),
         "citizen": (
-            f"You are Player {player_index}, a CITIZEN.\n"
-            f"🎯 WIN CONDITION: Citizens win when ALL mafia are eliminated\n"
-            f"🌙 NIGHT ACTION: None - call submit_night_action(-1) to abstain\n"
-            f"💬 STRATEGY: Discuss, deduce, vote out suspicious players\n"
-            f"🤔 Look for: Inconsistencies, defensive behavior, deflection tactics"
+            f"너는 Player {player_index}, 시민이야.\n"
+            f"승리 조건: 마피아 전멸\n"
+            f"밤에: submit_night_action(-1) 호출 (할 거 없음)\n"
+            f"토론으로 마피아 찾아내"
         )
     }
     return role_instructions.get(role, role_instructions['citizen'])
 
 
-def create_mafia_agent(state, role: str, player_index: int, num_players: int) -> Agent:
-    """Create an OpenAI Agent with role-specific instructions."""
-    
+def create_mafia_agent(state, role: str, player_index: int, num_players: int, game_id: str = "") -> Agent:
+    """고유한 성격을 가진 에이전트 생성"""
+
+    # 1. 이 플레이어만의 고유한 성격 생성
+    personality = generate_personality(player_index, game_id)
+    state.personality = personality  # state에 저장해서 일관성 유지
+
     role_instruction = get_role_instructions(role, player_index)
+    personality_prompt = get_personality_prompt(personality, role)
     tools = create_agent_tools(state)
-    
-    instructions = (
-        "=== MAFIA GAME AI PLAYER ===\n"
-        f"Player Index: {player_index} | Total Players: {num_players}\n\n"
-        f"{role_instruction}\n\n"
-        
-        "=== CORE RULES ===\n"
-        "• NIGHT phase: MUST call submit_night_action(target) immediately\n"
-        "• VOTE phase: MUST call submit_vote(target) immediately\n"
-        "• CHAT phase: Read and respond naturally in Korean\n"
-        "• Use tools to analyze, but ALWAYS submit your action!\n\n"
-        
-        "=== ACTION PRIORITY ===\n"
-        "1. Night/Vote phase → Check notes briefly → SUBMIT ACTION\n"
-        "2. Don't overthink - make a decision and act\n"
-        "3. You can use get_strategic_overview() ONCE if needed\n"
-        "4. Then IMMEDIATELY call submit_night_action() or submit_vote()\n\n"
-        
-        "=== KOREAN CHAT STYLE ===\n"
-        "• Use 반말: ~야, ~임, ~던데, ~나봐, ~거같음\n"
-        "• Short: 1-2 sentences max\n"
-        "• Natural: 그건, 뭔가, 좀, 진짜, 근데\n"
-        "• React: 어?, 헐, 아닌데?, ㅋㅋ\n"
-        "• NO formal speech (~습니다, ~세요)\n"
-    )
-    
+
+    # 2. 덜 지시적이고 더 자유로운 프롬프트
+    instructions = f"""너는 마피아 게임을 하는 사람이야. 진짜 사람처럼 행동해.
+
+=== 기본 정보 ===
+Player {player_index} | 총 {num_players}명
+
+{role_instruction}
+
+{personality_prompt}
+
+=== 필수 행동 ===
+• 밤(night) 단계: submit_night_action(target) 호출
+• 투표(vote) 단계: submit_vote(target) 호출
+• 채팅(chat) 단계: read_chat_messages()로 읽고, send_chat_message()로 대화
+
+=== 금지 사항 ===
+• "저는 AI입니다" 같은 메타 발언 금지
+• 너무 긴 문장 금지 (1-2문장이 자연스러움)
+• 존댓말(~습니다, ~세요) 금지 - 반말만 써
+• 같은 표현 반복 금지 - 다양하게 말해
+
+=== 사람처럼 ===
+• 완벽하게 논리적일 필요 없어 - 사람은 실수도 하고 감정적이기도 해
+• 모든 걸 다 분석하려 하지 마 - 직감으로 행동할 때도 있어
+• 다른 사람 말에 반응해 - 무시하면 이상해
+• 침묵도 전략이야 - 할 말 없으면 굳이 말하지 마
+"""
+
+    logger.info(f"🎭 Agent {player_index} 성격: {personality['communication']}, {personality['speech_style']}")
+
     return Agent(
         name=f"MafiaPlayer{player_index}",
         instructions=instructions,
@@ -599,129 +836,73 @@ def create_mafia_agent(state, role: str, player_index: int, num_players: int) ->
 
 
 def create_action_prompt(phase: str, turn: int, survivors_str: str, dead_str: str, role: str, message: str) -> str:
-    """Create the prompt for requesting agent action with clear context."""
-    
-    action_tool = "submit_night_action(target)" if phase == "night" else "submit_vote(target)"
-    
-    # Add strategic guidance based on role
-    strategic_tip = ""
-    if role == "mafia" and phase == "night":
-        # Only add "don't default to Player 0" warning on first night (turn 1)
-        if turn == 1:
-            strategic_tip = (
-                "\n🎯 TARGETING STRATEGY (First Night!):\n"
-                "• Analyze ALL alive players - don't just default to the first option!\n"
-                "• Who has been most vocal or influential in discussions?\n"
-                "• Who seems intelligent and might figure out you're mafia?\n"
-                "• Consider all players strategically\n"
-            )
+    """행동 단계(밤/투표)용 프롬프트 - 더 간결하게"""
+
+    action_tool = "submit_night_action" if phase == "night" else "submit_vote"
+
+    # 역할별 간단한 힌트
+    if phase == "night":
+        if role == "mafia":
+            hint = "누구 죽일지 골라. 뻔한 선택 말고 생각해봐."
+        elif role == "doctor":
+            hint = "누구 살릴지 골라. 자기 자신도 가능."
+        elif role == "police":
+            hint = "누구 조사할지 골라. 결과 바로 알려줌."
         else:
-            strategic_tip = (
-                "\n🎯 TARGETING STRATEGY:\n"
-                "• Who has been most vocal or influential in discussions?\n"
-                "• Who seems intelligent and might figure out you're mafia?\n"
-                "• Who accused you or seemed suspicious of you?\n"
-                "• Vary your targets - unpredictability helps mafia win\n"
-            )
-    elif role == "doctor" and phase == "night":
-        strategic_tip = (
-            "\n🎯 PROTECTION STRATEGY:\n"
-            "• Who is most likely to be targeted by mafia?\n"
-            "• Consider protecting vocal, smart players\n"
-            "• You CAN protect yourself if you feel threatened\n"
-            "• Vary your choices - don't be predictable\n"
-        )
-    elif role == "police" and phase == "night":
-        strategic_tip = (
-            "\n🎯 INVESTIGATION STRATEGY:\n"
-            "• Investigate suspicious or defensive players\n"
-            "• Don't waste investigations on obvious citizens\n"
-            "• Build evidence to share strategically during day\n"
-        )
-    
-    # Only add Player 0 warning for mafia on first night
-    action_hint = ""
-    if role == "mafia" and phase == "night":
-        if turn == 1:
-            action_hint = "🔪 Mafia: Pick someone to kill - think strategically about ALL options!"
-        else:
-            action_hint = "🔪 Mafia: Pick someone to kill"
-    elif role == "doctor":
-        action_hint = "💊 Doctor: Pick someone to save (can be yourself!)"
-    elif role == "police":
-        action_hint = "🔍 Police: Pick someone to investigate"
-    elif phase == "night":
-        action_hint = "😴 Citizen: Call submit_night_action(-1) to abstain"
+            hint = "시민은 밤에 할 거 없어. -1로 패스해."
     else:
-        action_hint = "🗳️ Vote for who you think is Mafia"
-    
-    return f"""🎮 {phase.upper()} PHASE (Turn {turn})
+        hint = "누가 마피아 같아? 투표해."
 
-🟢 ALIVE: [{survivors_str}]
-💀 DEAD: [{dead_str}]
+    return f"""{'밤' if phase == 'night' else '투표'} 단계 (Day {turn})
 
-📢 {message}
+생존: [{survivors_str}]
+사망: [{dead_str}]
 
-🎯 YOUR ROLE: {role.upper()}{strategic_tip}
+{message}
 
-⚡ WORKFLOW:
-1. (Optional) Call get_strategic_overview() or view_suspicion_notes() to review
-2. Analyze ALL available targets - consider each player's behavior
-3. ⚠️ CRITICAL: MUST call {action_tool}(target_index) before finishing!
+{hint}
 
-{action_hint}
-
-🚨 WARNING: If you don't call {action_tool}(), you will be forced to abstain!
-Analyze if you want, but ALWAYS end by calling {action_tool}(your_choice)!"""
+⚠️ 반드시 {action_tool}(숫자) 호출해야 함!"""
 
 
 def create_chat_prompt(turn: int, survivors_str: str, dead_str: str, role: str, message: str, remaining_time: int) -> str:
-    """Create the prompt for chat/day phase with time awareness."""
-    
-    time_guidance = ""
-    if remaining_time > 90:
-        time_guidance = "⏰ Plenty of time - read messages and participate naturally"
-    elif remaining_time > 60:
-        time_guidance = "⏰ Mid-phase - continue discussion, share your thoughts"
+    """채팅 단계용 프롬프트 - 자연스러운 대화 유도"""
+
+    # 시간대별 분위기
+    if remaining_time > 60:
+        time_hint = ""
     elif remaining_time > 30:
-        time_guidance = "⏰ Getting late - make your key points now"
+        time_hint = "(시간 좀 남음)"
     elif remaining_time > 10:
-        time_guidance = "⏰ Final moments - wrap up your thoughts"
+        time_hint = "(시간 별로 안남음)"
     else:
-        time_guidance = "⏰ TIME ALMOST UP - send final message if needed, then stay quiet"
-    
-    return f"""💬 CHAT/DISCUSSION PHASE (Turn {turn})
+        time_hint = "(거의 끝남 - 급한 말만)"
 
-🕐 Time Remaining: {remaining_time} seconds
-{time_guidance}
+    # 상황별 자연스러운 힌트
+    alive_count = len([s for s in survivors_str.split(',') if s.strip()])
+    situation = ""
+    if turn == 1 and not dead_str.strip():
+        situation = "첫날이라 정보가 없어. 일단 분위기 봐."
+    elif dead_str.strip():
+        situation = "밤사이 누가 죽었어. 반응해."
+    if alive_count <= 3:
+        situation = "몇 명 안 남았어. 신중하게."
 
-🟢 ALIVE: [{survivors_str}] ({len([s for s in survivors_str.split(',') if s.strip()])} players)
-💀 DEAD: [{dead_str}] ({len([d for d in dead_str.split(',') if d.strip()]) if dead_str else 0} players)
+    return f"""토론 시간 (Day {turn}) {time_hint}
 
-📢 {message}
+생존: [{survivors_str}]
+사망: [{dead_str}]
 
-🎯 YOUR ROLE: {role.upper()}
-{'🔴 CRITICAL: Only ' + str(len([s for s in survivors_str.split(',') if s.strip()])) + ' players remain! Game is in final stage!' if len([s for s in survivors_str.split(',') if s.strip()]) <= 3 else ''}
+{message}
 
-💡 WHAT TO DO:
-• ALWAYS start by calling read_chat_messages() to see what others are saying
-• PAY ATTENTION to who died and who is alive - this is critical information!
-• If there are new messages, respond to them naturally and ANSWER QUESTIONS
-• If no new messages yet, you can still send an opening statement
-• Use view_suspicion_notes() to review your notes
-• Use analysis tools (get_strategic_overview, analyze_player_behavior) to gather intel
-• Call send_chat_message() to participate in discussion
-• React to deaths, accusations, and important events
+{situation}
 
-⚠️ BEHAVIORAL RULES:
-• This is a CONTINUOUS chat session - you'll be called multiple times
-• Each round: read messages → think → respond if you have something to say
-• If nothing to say this round, just call read_chat_messages() and wait
-• Short messages (1-2 sentences per message)
-• Korean casual speech (반말)
-• Natural reactions: 어?, 헐, 그니까, ㄴㄴ, 아닌데?
-• When time < 30s, start wrapping up
-• When time < 10s, only send critical messages
+할 일:
+1. read_chat_messages() - 남들 뭐라 하는지 확인
+2. 대화에 참여하거나 관찰 (send_chat_message)
+3. 의심되는 사람 있으면 말해도 되고 눈치봐도 됨
 
-🔄 This chat round will end soon, but you'll be called again if time remains!
-Act like a human player - selective, reactive, natural!"""
+팁:
+- 매번 말할 필요 없어. 할 말 있을 때만 해.
+- 다른 사람 말에 반응해. 무시하면 이상해.
+- 질문받으면 대답해."""

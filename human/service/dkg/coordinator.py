@@ -175,5 +175,60 @@ class DKGCoordinator:
         
         print("✓ All players received their roles blindly")
         print("="*50)
-        
+
+        # Store encrypted roles for later decryption at game end
+        self.all_encrypted_roles = encrypted_roles
+
         return human_role, human_encrypted_role, encrypted_roles  # Return all encrypted roles
+
+    async def decrypt_all_roles_for_game_end(self) -> List[str]:
+        """
+        게임 종료 시 모든 플레이어의 역할을 DKG threshold decryption으로 복호화.
+        각 역할에 대해 모든 플레이어로부터 partial decryption을 수집하고 fusion.
+        """
+        from service.crypto.roles import one_hot_to_role, NUM_ROLE_TYPES
+        from service.crypto.threshold_decryption import fusion_decrypt
+
+        print("\n" + "="*50)
+        print(" Game End: Revealing All Roles via DKG")
+        print("="*50)
+
+        if not hasattr(self, 'all_encrypted_roles') or not self.all_encrypted_roles:
+            print("⚠️ No encrypted roles stored")
+            return []
+
+        all_roles = []
+
+        for player_idx, encrypted_role_b64 in enumerate(self.all_encrypted_roles):
+            print(f"\n[Decrypting] Player {player_idx}'s role...")
+
+            # 모든 에이전트로부터 partial decryption 수집
+            partial_strs = await self.network.collect_partial_decryptions(encrypted_role_b64)
+            partials = [
+                deserialize_ciphertext(self.protocol.cc, p)
+                for p in partial_strs
+            ]
+
+            # Human의 partial 추가
+            encrypted_role = deserialize_ciphertext(self.protocol.cc, encrypted_role_b64)
+            human_partial = partial_decrypt_lead(
+                self.protocol.cc,
+                encrypted_role,
+                self.protocol.keypair.secretKey
+            )
+            partials.append(human_partial)
+
+            # Fusion decrypt
+            final_plaintext = fusion_decrypt(self.protocol.cc, partials)
+            decrypted_vector = final_plaintext.GetPackedValue()[:NUM_ROLE_TYPES]
+
+            # Convert one-hot to role name
+            role = one_hot_to_role(decrypted_vector)
+            all_roles.append(role)
+            print(f"  ✓ Player {player_idx}: {role.upper()}")
+
+        print("\n" + "="*50)
+        print(" All roles revealed!")
+        print("="*50)
+
+        return all_roles

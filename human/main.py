@@ -128,40 +128,54 @@ class GameEngine:
     async def check_win_condition(self) -> Optional[str]:
         """
         Check win condition.
-        
-        Since we use blind protocol and don't know roles on server side,
-        we ask each alive agent if they think the game should end.
+
+        승리 조건:
+        - 마피아가 모두 죽으면 시민 승리
+        - 시민(의사, 경찰 포함) 수가 마피아 수 이하이면 마피아 승리
+
+        사람이 죽어도 게임은 계속됨 (관전 모드)
         """
-        alive_count = sum(1 for p in self.players if p.alive)
-        
-        # Check if human player is dead
+        # 살아있는 플레이어들의 역할 수집
+        alive_mafia = 0
+        alive_citizens = 0  # 시민, 의사, 경찰 모두 포함
+
+        import httpx
+
+        # 사람 플레이어 역할 체크
         human_player = self.players[self.human_player_index]
-        if not human_player.alive:
-            return "game_over"  # Human player died
-        
-        if alive_count <= 1:
-            return "draw"  # Only 1 or 0 players left
-        
-        # Check if only 2 players left (likely mafia vs citizen endgame)
-        if alive_count == 2:
-            # Ask agents if game should end
-            import httpx
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    for player in self.players:
-                        if not player.is_human and player.alive:
-                            try:
-                                response = await client.get(f"{player.address}/check_game_end")
-                                if response.status_code == 200:
-                                    data = response.json()
-                                    if data.get("game_should_end", False):
-                                        winner = data.get("winner", "unknown")
-                                        return winner
-                            except:
-                                pass
-            except:
-                pass
-        
+        if human_player.alive:
+            if self.human_role == "mafia":
+                alive_mafia += 1
+            else:
+                alive_citizens += 1
+
+        # 에이전트들 역할 체크
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for player in self.players:
+                if not player.is_human and player.alive:
+                    try:
+                        response = await client.get(f"{player.address}/reveal_role")
+                        if response.status_code == 200:
+                            data = response.json()
+                            role = data.get("role", "").lower()
+                            if role == "mafia":
+                                alive_mafia += 1
+                            else:
+                                alive_citizens += 1
+                    except:
+                        # 연결 실패 시 시민으로 가정
+                        alive_citizens += 1
+
+        print(f"[Engine] 승리 조건 체크: 마피아 {alive_mafia}명, 시민 {alive_citizens}명")
+
+        # 마피아가 모두 죽으면 시민 승리
+        if alive_mafia == 0:
+            return "citizens"
+
+        # 시민 수가 마피아 수 이하이면 마피아 승리
+        if alive_citizens <= alive_mafia:
+            return "mafia"
+
         return None
 
     async def broadcast_update(self, phase: str, message: str):
@@ -263,10 +277,10 @@ class GameEngine:
     async def get_human_action(self, phase: str, survivors: List[int], role: str) -> tuple:
         """
         Get human player action.
-        
+
         BLIND PROTOCOL: Returns 3 vectors (attack, heal, investigate).
         Only the role-appropriate vector contains real action, others are dummies.
-        
+
         TUI MODE: If human_action_ready is set, returns the pending_human_action from TUI.
         CLI MODE: Prompts for input.
         """
@@ -276,8 +290,13 @@ class GameEngine:
             self.human_action_ready = False  # Reset for next time
             self.pending_human_action = None
             print(f"[You] Using TUI action: target={target}")
+            # Use async version for police to get investigation result
+            if role == "police" and phase == "night" and target >= 0:
+                return await self.crypto_ops.create_human_action_vectors_async(
+                    target, role, phase, self.players
+                )
             return self.crypto_ops.create_human_action_vectors(target, role, phase)
-        
+
         # CLI mode fallback
         human = self.players[self.human_player_index]
 
@@ -289,7 +308,7 @@ class GameEngine:
         # Determine if human can act
         can_act = False
         action_type = None
-        
+
         if phase == "night":
             if role == "mafia":
                 can_act = True
@@ -322,6 +341,11 @@ class GameEngine:
 
                 if target in valid_targets:
                     print(f"[You] Action encrypted and submitted")
+                    # Use async version for police to get investigation result
+                    if role == "police" and phase == "night":
+                        return await self.crypto_ops.create_human_action_vectors_async(
+                            target, role, phase, self.players
+                        )
                     return self.crypto_ops.create_human_action_vectors(target, role, phase)
                 else:
                     print(f"Invalid target. Choose from {valid_targets}")
@@ -371,6 +395,15 @@ class GameEngine:
 
         self.log_message(f"Game ended. Winner: {winner}")
         await self.broadcast_update("end", f"Game over! {winner} wins!")
+
+    async def decrypt_all_roles(self) -> List[str]:
+        """
+        게임 종료 시 모든 플레이어의 역할을 DKG threshold decryption으로 복호화.
+        Returns: List of role strings in player order
+        """
+        if self.dkg_coordinator:
+            return await self.dkg_coordinator.decrypt_all_roles_for_game_end()
+        return []
     
     async def relay_decrypt_for_player(
         self,

@@ -3,6 +3,7 @@ Main Application - Orchestrates Game Flow with TUI
 """
 from textual.app import App
 import asyncio
+import httpx
 import os
 import sys
 from typing import List
@@ -15,7 +16,7 @@ from screens import (
 
 # Import game engine
 from main import GameEngine
-from network import spawn_agents_from_lobbies, check_agent_health
+from network import spawn_agents_from_lobbies, check_agent_health, AgentCommunicator
 from config import GAME_CONFIG, NETWORK_CONFIG
 
 
@@ -41,6 +42,39 @@ class MafiaGameApp(App):
             }
             for p in self.game_engine.players
         ]
+
+    async def _get_victim_roles(self, victim_indices: List[int]) -> dict:
+        """사망자들의 역할을 가져옴"""
+        victim_roles = {}
+        for idx in victim_indices:
+            player = self.game_engine.players[idx]
+            if player.is_human:
+                # 휴먼 플레이어는 자신의 역할을 알고 있음
+                victim_roles[idx] = self.game_engine.human_role
+            else:
+                # 에이전트에게 역할 요청
+                role = await AgentCommunicator.get_agent_role(player)
+                victim_roles[idx] = role
+        return victim_roles
+
+    async def _broadcast_death_roles(self, victim_roles: dict) -> None:
+        """사망자 역할을 모든 에이전트에게 브로드캐스트"""
+        if not victim_roles:
+            return
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for player in self.game_engine.players:
+                if not player.is_human:
+                    try:
+                        await client.post(
+                            f"{player.address}/death_announcement",
+                            json={"deaths": [
+                                {"player_index": idx, "role": role}
+                                for idx, role in victim_roles.items()
+                            ]}
+                        )
+                    except Exception:
+                        pass  # 실패해도 계속 진행
 
     async def on_mount(self) -> None:
         """Initialize application"""
@@ -186,7 +220,7 @@ class MafiaGameApp(App):
                     self.game_engine.pending_human_action = -1  # Abstain
                     self.game_engine.human_action_ready = True
 
-                night_screen.add_message("⏳ Waiting for all players...", "yellow")
+                night_screen.add_message("⏳ 모든 플레이어를 기다리는 중...", "yellow")
 
                 # Execute night phase in background
                 await self.game_engine.execute_night_phase()
@@ -198,12 +232,29 @@ class MafiaGameApp(App):
                 # 플레이어 데이터 업데이트 (사망 반영)
                 players_data = self._get_players_data()
 
+                # 사망자 역할 가져오기 및 에이전트에게 브로드캐스트
+                victim_roles = await self._get_victim_roles(killed_players)
+                await self._broadcast_death_roles(victim_roles)
+
+                # 경찰 조사 결과 가져오기 (human이 경찰인 경우)
+                investigation_result = None
+                if self.game_engine.human_role == "police" and self.game_engine.crypto_ops:
+                    target = self.game_engine.crypto_ops.last_investigation_target
+                    is_mafia = self.game_engine.crypto_ops.last_investigation_result
+                    if target is not None and is_mafia is not None:
+                        investigation_result = {"target": target, "is_mafia": is_mafia}
+                    # 결과 초기화 (다음 밤을 위해)
+                    self.game_engine.crypto_ops.last_investigation_target = None
+                    self.game_engine.crypto_ops.last_investigation_result = None
+
                 night_result_screen = NightResultScreen(
                     day_number=self.game_engine.game_phases.day_number,
                     killed_players=killed_players,
                     players=players_data,
                     human_index=self.game_engine.human_player_index,
                     human_role=self.game_engine.human_role,
+                    victim_roles=victim_roles,
+                    investigation_result=investigation_result,
                     auto_continue_seconds=5
                 )
 
@@ -216,8 +267,16 @@ class MafiaGameApp(App):
                 # Check win condition
                 winner = await self.game_engine.check_win_condition()
                 if winner:
-                    # Show game over screen and wait indefinitely
-                    game_over_screen = GameOverScreen(winner, self.game_engine.players)
+                    # DKG threshold decryption으로 모든 역할 복호화
+                    all_roles = await self.game_engine.decrypt_all_roles()
+
+                    # Show game over screen with all roles revealed
+                    game_over_screen = GameOverScreen(
+                        winner,
+                        self.game_engine.players,
+                        roles=all_roles,
+                        human_index=self.game_engine.human_player_index
+                    )
                     self.push_screen(game_over_screen)
                     # Game over screen will call app.exit() when user presses exit
                     # Keep loop alive until app.exit() is called
@@ -301,7 +360,7 @@ class MafiaGameApp(App):
                     self.game_engine.pending_human_action = -1  # Abstain
                     self.game_engine.human_action_ready = True
 
-                vote_screen.add_message("⏳ Collecting votes from all players...", "yellow")
+                vote_screen.add_message("⏳ 모든 플레이어의 투표를 수집하는 중...", "yellow")
 
                 # Execute vote phase in background
                 await self.game_engine.execute_vote_phase()
@@ -314,6 +373,11 @@ class MafiaGameApp(App):
                 # 플레이어 데이터 업데이트 (사망 반영)
                 players_data = self._get_players_data()
 
+                # 사망자 역할 가져오기 및 에이전트에게 브로드캐스트
+                vote_victims = [voted_out] if voted_out is not None else []
+                victim_roles = await self._get_victim_roles(vote_victims)
+                await self._broadcast_death_roles(victim_roles)
+
                 vote_result_screen = VoteResultScreen(
                     day_number=self.game_engine.game_phases.day_number,
                     voted_out_player=voted_out,
@@ -321,6 +385,7 @@ class MafiaGameApp(App):
                     vote_counts=vote_counts,
                     human_index=self.game_engine.human_player_index,
                     human_role=self.game_engine.human_role,
+                    victim_roles=victim_roles,
                     auto_continue_seconds=5
                 )
 
@@ -333,8 +398,16 @@ class MafiaGameApp(App):
                 # Check win condition
                 winner = await self.game_engine.check_win_condition()
                 if winner:
-                    # Show game over screen and wait indefinitely
-                    game_over_screen = GameOverScreen(winner, self.game_engine.players)
+                    # DKG threshold decryption으로 모든 역할 복호화
+                    all_roles = await self.game_engine.decrypt_all_roles()
+
+                    # Show game over screen with all roles revealed
+                    game_over_screen = GameOverScreen(
+                        winner,
+                        self.game_engine.players,
+                        roles=all_roles,
+                        human_index=self.game_engine.human_player_index
+                    )
                     self.push_screen(game_over_screen)
                     # Game over screen will call app.exit() when user presses exit
                     # Keep loop alive until app.exit() is called

@@ -98,6 +98,7 @@ class VoteScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Footer()
 
         # 클릭 가능한 플레이어 상태바
         if self.players:
@@ -127,8 +128,6 @@ class VoteScreen(Screen):
                     yield Label("💀 사망하여 투표할 수 없습니다.", id="vote_instructions")
 
                 yield RichLog(id="message_log", highlight=True, markup=True)
-
-        yield Footer()
 
     async def on_mount(self) -> None:
         """Initialize vote screen"""

@@ -12,7 +12,7 @@ import logging
 import tempfile
 import base64
 import httpx
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException
 import uvicorn
 from openfhe import BINARY
@@ -97,7 +97,8 @@ class AgentState:
         self.my_encrypted_role: Optional[str] = None  # For blind role protocol
         self.encrypted_role_vector: Optional[str] = None  # For police investigation
         self.all_encrypted_roles: List[str] = []  # All players' encrypted roles
-        self.last_investigation_result: Optional[dict] = None  # Police investigation result
+        self.last_investigation_result: Optional[Dict[str, Any]] = None  # Police investigation result
+        self.personality: Optional[Dict[str, Any]] = None  # Agent personality traits
 
 state = AgentState()
 app = FastAPI(title="Mafia AI Agent")
@@ -737,14 +738,16 @@ async def complete_role_decryption(request: dict):
         state.session = SQLiteSession(session_id, db_path)
         await state.session.clear_session()
         state.last_read_msg_id = -1
-        state.agent = create_mafia_agent(state, state.role, state.player_index, state.num_players)
-        
+        state.agent = create_mafia_agent(state, state.role, state.player_index, state.num_players, state.game_id or "")
+
         logger.info("━" * 60)
         logger.info(f"🎭 ROLE DECRYPTED BLINDLY | Player #{state.player_index}")
         logger.info(f"   Role: {state.role.upper()}")
         logger.info(f"   ✓ No one else knows my role!")
         logger.info(f"   🔐 Encrypted role vector stored for investigation")
         logger.info(f"   🤖 AI Agent initialized")
+        if hasattr(state, 'personality'):
+            logger.info(f"   🎭 Personality: {state.personality.get('communication', 'unknown')}")
         logger.info("━" * 60)
         
         return {"success": True, "role": state.role}
@@ -785,10 +788,12 @@ async def initialize_agent(request: InitRequest):
         state.session = SQLiteSession(session_id, db_path)
         await state.session.clear_session()
         state.last_read_msg_id = -1
-        state.agent = create_mafia_agent(state, state.role, state.player_index, state.num_players)
+        state.agent = create_mafia_agent(state, state.role, state.player_index, state.num_players, state.game_id or "")
 
         logger.info("━" * 60)
-        logger.info(f"🎮 INITIALIZED | Player #{state.player_index} | Role: {state.role.upper()}")
+        logger.info(f"🎮 INITIALIZED | Player #{state.player_index} | Role: {state.role.upper() if state.role else 'PENDING'}")
+        if hasattr(state, 'personality'):
+            logger.info(f"   🎭 Personality: {state.personality.get('communication', 'unknown')}")
         logger.info("━" * 60)
 
         return {"success": True, "message": f"Agent initialized as {state.role}"}
@@ -1010,19 +1015,38 @@ Do it NOW - no more analysis needed!"""
         # BLIND PROTOCOL: Create ALL three action vectors
         # Only the one matching our role contains real data, others are random dummies
         logger.info("🎭 BLIND PROTOCOL: Generating 3 encrypted vectors (attack/heal/investigate)")
-        
+
         attack_vec = None
         heal_vec = None
         investigate_vec = None
-        
-        if state.pending_action_target is not None and request.phase == "night":
+
+        # 투표 단계: attack_vector 슬롯에 투표 벡터 저장
+        if request.phase == "vote":
+            if state.pending_action_target is not None and state.pending_action_target >= 0:
+                # 유효한 투표 대상이 있는 경우 one-hot 벡터 생성
+                attack_vec = create_one_hot_vector(
+                    state.num_players,
+                    state.pending_action_target,
+                    state.cc,
+                    state.joint_public_key
+                )
+                logger.info(f"🗳️ Vote: Player {state.pending_action_target}")
+            else:
+                # 기권
+                attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+                logger.info("🗳️ Vote: Abstained")
+            # 투표 단계에서는 heal, investigate는 사용하지 않음
+            heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+            investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+
+        elif state.pending_action_target is not None and request.phase == "night":
             real_vector = create_one_hot_vector(
                 state.num_players,
                 state.pending_action_target,
                 state.cc,
                 state.joint_public_key
             )
-            
+
             # Assign real vector to matching role, dummies to others
             if state.role == "mafia":
                 attack_vec = real_vector
@@ -1037,17 +1061,17 @@ Do it NOW - no more analysis needed!"""
             elif state.role == "police":
                 attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
                 heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-                
+
                 # Police: Compute investigation result
                 # Get target's encrypted role vector
                 target_role_enc_b64 = state.all_encrypted_roles[state.pending_action_target]
                 target_role_enc = deserialize_ciphertext(state.cc, target_role_enc_b64)
-                
+
                 # Mafia check vector: [citizen=0, mafia=1, doctor=0, police=0]
                 from service.crypto.roles import NUM_ROLE_TYPES
                 from service.crypto.vector_operations import homomorphic_dot_product
                 mafia_check_vector = [0, 1, 0, 0]
-                
+
                 # Compute dot product: role_vector · mafia_check
                 # Result will be 1 if mafia, 0 otherwise
                 investigate_vec = homomorphic_dot_product(
@@ -1055,7 +1079,7 @@ Do it NOW - no more analysis needed!"""
                     target_role_enc,
                     mafia_check_vector
                 )
-                
+
                 logger.info(f"🔍 Attack: DUMMY | Heal: DUMMY | Investigate: COMPUTED (Player {state.pending_action_target} role check)")
             else:  # citizen
                 attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
@@ -1063,7 +1087,7 @@ Do it NOW - no more analysis needed!"""
                 investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
                 logger.info("👤 Citizen: All DUMMY vectors")
         else:
-            # No action or not night phase - all dummies
+            # No action or not night/vote phase - all dummies
             attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
             heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
             investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
@@ -1131,6 +1155,31 @@ async def chat_phase_control(request: dict):
     return {"status": "unknown_action"}
 
 
+@app.post("/death_announcement")
+async def receive_death_announcement(request: dict):
+    """사망자 역할 공개를 수신"""
+    deaths = request.get("deaths", [])
+
+    for death in deaths:
+        player_index = death.get("player_index")
+        role = death.get("role", "unknown")
+
+        # 의심 메모에 기록
+        if state.suspicion_notes:
+            state.suspicion_notes.mark_player_dead(player_index)
+            # 역할 정보 저장 (confirmed)
+            state.suspicion_notes.write_note(
+                target_index=player_index,
+                level="confirmed_dead",
+                reasoning=f"사망 확인 - 역할: {role.upper()}",
+                current_turn=state.current_turn
+            )
+
+        logger.info(f"💀 사망 공지: 플레이어 {player_index} - 역할: {role.upper()}")
+
+    return {"status": "ok"}
+
+
 @app.post("/chat")
 async def receive_chat_message(request: dict):
     """Receive chat message from host"""
@@ -1170,6 +1219,16 @@ async def get_encrypted_role_vector(request: dict):
     except Exception as e:
         logger.error(f"❌ Get encrypted role vector error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/reveal_role")
+async def reveal_role():
+    """사망 시 역할 공개 - 게임 종료 후 또는 사망 시 호출"""
+    if state.role is None:
+        raise HTTPException(status_code=400, detail="Role not assigned yet")
+
+    logger.info(f"💀 Revealing role: {state.role.upper()}")
+    return {"role": state.role}
 
 
 # ============================================================================

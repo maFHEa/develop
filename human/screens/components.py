@@ -152,35 +152,14 @@ class PlayerCard(Static):
 
     def _render_card(self) -> None:
         """Render the card content"""
-        lines = []
-
-        # Status icon
-        if self.is_alive:
-            status = "🟢"
-        else:
-            status = "💀"
-
-        # Player info
+        # Player info - 죽었을 때만 해골 표시
+        # 사람은 "나"만 표시, 역할은 상단 타이틀에서 별도 표시
         if self.is_human:
-            name_line = f"{status} P{self.player_index} (You)"
+            name_line = "💀 나" if not self.is_alive else "나"
         else:
-            name_line = f"{status} P{self.player_index}"
+            name_line = f"💀 P{self.player_index}" if not self.is_alive else f"P{self.player_index}"
 
-        lines.append(name_line)
-        lines.append(self.player_name[:10])
-
-        # Role (if shown)
-        if self.show_role and self.role:
-            role_icons = {
-                "mafia": "🔪",
-                "doctor": "💉",
-                "police": "🔍",
-                "citizen": "👤"
-            }
-            icon = role_icons.get(self.role.lower(), "❓")
-            lines.append(f"{icon} {self.role.upper()}")
-
-        self.update("\n".join(lines))
+        self.update(name_line)
 
     def on_click(self) -> None:
         """Handle click events"""
@@ -275,9 +254,31 @@ class PlayerStatusBar(Widget):
         self.exclude_self = exclude_self
         self.player_cards: List[PlayerCard] = []
 
+    def _get_role_display(self) -> str:
+        """역할을 한글로 표시"""
+        if not self.human_role:
+            return ""
+        role_names = {
+            "mafia": "마피아",
+            "doctor": "의사",
+            "police": "경찰",
+            "citizen": "시민"
+        }
+        role_icons = {
+            "mafia": "🔪",
+            "doctor": "💉",
+            "police": "🔍",
+            "citizen": "👤"
+        }
+        role_name = role_names.get(self.human_role.lower(), self.human_role)
+        icon = role_icons.get(self.human_role.lower(), "")
+        return f" | {icon} {role_name}"
+
     def compose(self) -> ComposeResult:
         if self.title:
-            yield Static(self.title, classes="title")
+            # 타이틀에 역할 표시 추가
+            role_display = self._get_role_display() if self.show_human_role else ""
+            yield Static(f"{self.title}{role_display}", classes="title")
 
         with Horizontal():
             for p in self.players:

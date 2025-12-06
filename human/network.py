@@ -285,3 +285,16 @@ class AgentCommunicator:
         except Exception as e:
             print(f"[Engine] Error requesting action from {player.name}: {e}")
             raise
+
+    @staticmethod
+    async def get_agent_role(player: Player) -> str:
+        """사망한 에이전트의 역할을 가져옴"""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{player.address}/reveal_role")
+                response.raise_for_status()
+                data = response.json()
+                return data.get("role", "unknown")
+        except Exception as e:
+            print(f"[Engine] Error getting role from {player.name}: {e}")
+            return "unknown"

@@ -75,7 +75,8 @@ class SetupScreen(Screen):
     
     def compose(self) -> ComposeResult:
         yield Header()
-        
+        yield Footer()
+
         with ScrollableContainer(id="setup_container"):
             yield Label("🎮 마피아 게임 - 설정", classes="setup_title")
             yield Label("")
@@ -92,22 +93,20 @@ class SetupScreen(Screen):
 
             yield Label("")
             yield Label("로비 주소 (한 줄에 하나씩):", classes="label")
-            
+
             # Lobby address input
             with Horizontal(classes="input_row"):
                 yield Input(placeholder="http://localhost:8000", id="lobby_input", classes="input_field")
                 yield Button("Add", id="add_lobby", variant="primary")
-            
+
             # Lobby list
             yield RichLog(id="lobby_list", highlight=False, markup=True)
-            
+
             # Action buttons
             with Horizontal(classes="button_row"):
                 yield Button("설정 파일에서 불러오기", id="load_config", variant="default")
                 yield Button("게임 시작", id="start_game", variant="success")
                 yield Button("종료", id="quit_btn", variant="error")
-        
-        yield Footer()
     
     async def on_mount(self) -> None:
         """Initialize with defaults"""

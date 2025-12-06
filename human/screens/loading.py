@@ -38,13 +38,12 @@ class LoadingScreen(Screen):
     
     def compose(self) -> ComposeResult:
         yield Header()
-        
+        yield Footer()
+
         with Container(id="loading_container"):
             yield Label("🎮 게임 초기화 중...", classes="loading_title")
             yield LoadingIndicator()
             yield RichLog(id="status_log", highlight=True, markup=True, auto_scroll=True)
-        
-        yield Footer()
     
     def add_status(self, message: str, style: str = "white"):
         """Add a status message"""
