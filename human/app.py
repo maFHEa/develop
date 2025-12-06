@@ -333,7 +333,31 @@ class MafiaGameApp(App):
                 self.game_engine.phase = "vote"
                 human_player = self.game_engine.players[self.game_engine.human_player_index]
                 survivors = self.game_engine.get_survivors()
+                dead = self.game_engine.get_dead_players()
                 player_names = [p.name for p in self.game_engine.players]
+
+                # Start agent voting in background (before showing vote screen)
+                async def start_agent_voting():
+                    async with httpx.AsyncClient(timeout=120.0) as client:
+                        tasks = []
+                        for player in self.game_engine.players:
+                            if not player.is_human and player.alive:
+                                tasks.append(
+                                    client.post(
+                                        f"{player.address}/request_action",
+                                        json={
+                                            "phase": "vote",
+                                            "message": f"Day {self.game_engine.game_phases.day_number} vote phase.",
+                                            "survivors": survivors,
+                                            "dead_players": dead
+                                        }
+                                    )
+                                )
+                        if tasks:
+                            await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Start agents voting in background immediately
+                agent_vote_task = asyncio.create_task(start_agent_voting())
 
                 # Create and show vote screen
                 vote_screen = VoteScreen(
@@ -361,6 +385,9 @@ class MafiaGameApp(App):
                     self.game_engine.human_action_ready = True
 
                 vote_screen.add_message("⏳ 모든 플레이어의 투표를 수집하는 중...", "yellow")
+
+                # Wait for agent voting to complete
+                await agent_vote_task
 
                 # Execute vote phase in background
                 await self.game_engine.execute_vote_phase()

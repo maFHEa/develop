@@ -25,6 +25,7 @@ class GamePhases:
         self.day_number = 0
         self.last_killed: List[int] = []
         self.last_voted_out: Optional[int] = None
+        self.last_vote_counts: Optional[List[int]] = None
         self.logger = logger
     
     async def execute_night_phase(
@@ -192,7 +193,10 @@ class GamePhases:
 
         print("[Engine] Threshold decrypting vote results...")
         vote_counts = await self.crypto_ops.threshold_decrypt_vector(total_votes_enc, players)
-        
+
+        # Store vote counts for UI display
+        self.last_vote_counts = vote_counts
+
         # Log decrypted vote results to file
         max_votes = max(vote_counts)
         voted_out = vote_counts.index(max_votes) if max_votes > 0 else None

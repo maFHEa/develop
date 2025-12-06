@@ -19,7 +19,7 @@ class Player:
         self.is_human = is_human
         self.address = address
         self.alive = True
-        self.name = f"Human (You)" if is_human else f"AI Agent {index}"
+        self.name = "나" if is_human else f"P{index}"
         
         # Encrypted role vector (only used for win condition check)
         self.encrypted_role_vector: Optional[str] = None

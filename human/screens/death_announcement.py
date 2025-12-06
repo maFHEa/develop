@@ -17,11 +17,11 @@ class VictimCard(Static):
 
     DEFAULT_CSS = """
     VictimCard {
-        width: 40;
-        height: auto;
-        background: $error 10%;
+        width: 45;
+        height: 5;
+        background: $surface-darken-2;
         border: heavy $error;
-        content-align: center middle;
+        text-align: center;
         margin: 0 1;
         padding: 1;
     }
@@ -357,7 +357,7 @@ class NightResultScreen(DeathAnnouncementScreen):
                     is_mafia = self.investigation_result.get("is_mafia", False)
                     target_info = next(
                         (p for p in self.players if p["index"] == target_idx),
-                        {"index": target_idx, "name": f"Player {target_idx}"}
+                        {"index": target_idx, "name": f"P{target_idx}"}
                     )
                     with Center():
                         yield PoliceInvestigationCard(
@@ -375,7 +375,7 @@ class NightResultScreen(DeathAnnouncementScreen):
                         for victim_idx in self.victims:
                             player_info = next(
                                 (p for p in self.players if p["index"] == victim_idx),
-                                {"index": victim_idx, "name": f"Player {victim_idx}"}
+                                {"index": victim_idx, "name": f"P{victim_idx}"}
                             )
                             victim_role = self.victim_roles.get(victim_idx)
                             yield VictimCard(
@@ -396,12 +396,13 @@ class VoteResultsPanel(Static):
 
     DEFAULT_CSS = """
     VoteResultsPanel {
-        width: 100%;
+        width: 45;
         height: auto;
         padding: 1;
-        margin: 1 0;
+        margin: 0 1 1 1;
         background: $surface-darken-2;
-        border: solid $accent;
+        border: heavy $accent;
+        text-align: center;
     }
     """
 
@@ -474,7 +475,6 @@ class VoteResultScreen(DeathAnnouncementScreen):
         self.vote_counts = vote_counts
 
     def compose(self) -> ComposeResult:
-        # 기본 compose 호출 전에 투표 결과 표시 추가
         yield Header()
         yield Footer()
 
@@ -495,12 +495,12 @@ class VoteResultScreen(DeathAnnouncementScreen):
 
                 # 투표 결과 표시 (있는 경우)
                 if self.vote_counts:
-                    yield Static("📊 투표 결과:", classes="subtitle")
-                    yield VoteResultsPanel(
-                        vote_counts=self.vote_counts,
-                        players=self.players,
-                        id="vote_results"
-                    )
+                    with Center():
+                        yield VoteResultsPanel(
+                            vote_counts=self.vote_counts,
+                            players=self.players,
+                            id="vote_results"
+                        )
 
                 yield Static("마을의 결정은...", classes="subtitle")
 
@@ -510,7 +510,7 @@ class VoteResultScreen(DeathAnnouncementScreen):
                         for victim_idx in self.victims:
                             player_info = next(
                                 (p for p in self.players if p["index"] == victim_idx),
-                                {"index": victim_idx, "name": f"플레이어 {victim_idx}"}
+                                {"index": victim_idx, "name": f"P{victim_idx}"}
                             )
                             victim_role = self.victim_roles.get(victim_idx)
                             yield VictimCard(

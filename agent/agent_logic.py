@@ -311,27 +311,29 @@ def create_agent_tools(state, phase: str = "setup"):
     ) -> str:
         """Send a chat message to all players in the game. Message must be in Korean."""
         import time
-        
+
         if not state.alive:
             return "죽은 플레이어는 메시지를 보낼 수 없습니다."
-        
+
         # Enforce typing delay - simulate human typing speed
-        # Check when last message was sent
+        # First message of chat phase has no delay
         current_time = time.time()
-        if hasattr(state, 'last_message_time'):
+        if hasattr(state, 'last_message_time') and state.last_message_time is not None:
             time_since_last = current_time - state.last_message_time
-            min_delay = 5.0  # minimum 5 seconds between messages
+            min_delay = 3.0  # minimum 3 seconds between messages (reduced from 5)
             if time_since_last < min_delay:
+                # Instead of rejecting, just wait
+                import asyncio
                 wait_time = min_delay - time_since_last
-                return f"너무 빨라. {wait_time:.1f}초 후에 다시 시도해."
-        
+                time.sleep(wait_time)
+
         state.last_message_time = current_time
-        
+
         logger.info(f"💬 Sending message: \"{message[:80]}{'...' if len(message) > 80 else ''}\"")
-        
+
         # Queue message - host will poll for it
         state.pending_chat_messages.append(message)
-        
+
         return f"메시지 전송됨: '{message}'"
     
     # 2. Suspicion Note Tools
