@@ -778,6 +778,11 @@ async def request_action(request: GameUpdateRequest):
         state.pending_chat_messages = []
         state.current_phase = request.phase
 
+        # Update alive status based on survivors list
+        if state.player_index not in request.survivors:
+            state.alive = False
+            logger.info(f"💀 Player {state.player_index} is now marked as dead (not in survivors list)")
+
         # Update suspicion notes with dead players
         if state.suspicion_notes:
             for i in range(state.num_players):
