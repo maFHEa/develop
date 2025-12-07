@@ -2,11 +2,10 @@
 Vote Screen for Elimination Phase
 """
 from textual.app import ComposeResult
-from textual.widgets import Header, Footer, Label, RichLog, Button
+from textual.widgets import Header, Footer, Label, Button
 from textual.containers import Container, Vertical, Horizontal
 from textual.binding import Binding
 from textual.screen import Screen
-from rich.text import Text
 from typing import Optional, List
 import asyncio
 
@@ -40,6 +39,7 @@ class VoteScreen(Screen):
     }
 
     #vote_title {
+        width: 100%;
         text-align: center;
         color: $warning;
         text-style: bold;
@@ -47,6 +47,7 @@ class VoteScreen(Screen):
     }
 
     #vote_instructions {
+        width: 100%;
         text-align: center;
         color: $text-muted;
         margin-bottom: 2;
@@ -63,9 +64,10 @@ class VoteScreen(Screen):
         margin: 0 1;
     }
 
-    #message_log {
-        height: 10;
-        background: $surface-darken-1;
+    #status_text {
+        width: 100%;
+        text-align: center;
+        color: $warning;
         margin-top: 1;
     }
     """
@@ -124,21 +126,13 @@ class VoteScreen(Screen):
                     with Horizontal(id="button_container"):
                         yield Button("투표 제출", id="submit_btn", variant="primary", classes="vote_button")
                         yield Button("기권", id="abstain_btn", variant="default", classes="vote_button")
+                    yield Label("", id="status_text")
                 else:
                     yield Label("💀 사망하여 투표할 수 없습니다.", id="vote_instructions")
 
-                yield RichLog(id="message_log", highlight=True, markup=True)
-
     async def on_mount(self) -> None:
         """Initialize vote screen"""
-        log = self.query_one("#message_log", RichLog)
-
-        if self.is_alive:
-            log.write(Text("👆 위의 플레이어 카드를 클릭하여 투표 대상을 선택하세요", style="cyan"))
-            log.write(Text("[투표 제출] 또는 [기권]을 클릭하세요", style="dim"))
-        else:
-            log.write(Text("💀 당신은 사망했습니다.", style="red"))
-            log.write(Text("투표에 참여할 수 없습니다.", style="dim"))
+        if not self.is_alive:
             # Auto-submit for dead player
             self.selected_target = -1
             self.vote_submitted = True
@@ -190,6 +184,9 @@ class VoteScreen(Screen):
                 pass
 
     def add_message(self, message: str, style: str = "white") -> None:
-        """Add a message to the log"""
-        log = self.query_one("#message_log", RichLog)
-        log.write(Text(message, style=style))
+        """Update status text (overwrites previous message)"""
+        try:
+            status = self.query_one("#status_text", Label)
+            status.update(message)
+        except Exception:
+            pass

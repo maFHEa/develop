@@ -7,13 +7,12 @@ from .setup import SetupScreen
 from .chat import ChatScreen
 from .vote import VoteScreen
 from .game_over import GameOverScreen
+from .role_reveal import RoleRevealScreen
 from .components import PlayerStatusBar, PlayerCard, get_player_color, PLAYER_COLORS
 from .death_announcement import (
     DeathAnnouncementScreen,
     NightResultScreen,
     VoteResultScreen,
-    VictimCard,
-    VoteResultsPanel
 )
 
 __all__ = [
@@ -23,13 +22,12 @@ __all__ = [
     'ChatScreen',
     'VoteScreen',
     'GameOverScreen',
+    'RoleRevealScreen',
     'PlayerStatusBar',
     'PlayerCard',
     'DeathAnnouncementScreen',
     'NightResultScreen',
     'VoteResultScreen',
-    'VictimCard',
-    'VoteResultsPanel',
     'get_player_color',
     'PLAYER_COLORS'
 ]

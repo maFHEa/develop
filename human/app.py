@@ -11,7 +11,7 @@ from typing import List
 # Import screens
 from screens import (
     LoadingScreen, NightScreen, SetupScreen, ChatScreen, VoteScreen, GameOverScreen,
-    NightResultScreen, VoteResultScreen
+    NightResultScreen, VoteResultScreen, RoleRevealScreen
 )
 
 # Import game engine
@@ -182,6 +182,20 @@ class MafiaGameApp(App):
 
         await asyncio.sleep(1)
         self.app.pop_screen()
+
+        # Show role reveal screen
+        role_reveal = RoleRevealScreen(
+            role=self.game_engine.human_role or "citizen",
+            players=self._get_players_data(),
+            human_index=self.game_engine.human_player_index,
+            auto_continue_seconds=7
+        )
+        self.push_screen(role_reveal)
+
+        # Wait for role reveal to complete
+        while not role_reveal.should_continue:
+            await asyncio.sleep(0.3)
+        self.pop_screen()
 
         # Start game loop
         await self._run_game()

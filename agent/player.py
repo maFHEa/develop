@@ -12,7 +12,7 @@ import logging
 import tempfile
 import base64
 import httpx
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException
 import uvicorn
 from openfhe import BINARY
@@ -96,9 +96,6 @@ class AgentState:
         self.action_submitted: bool = False
         self.pending_chat_messages: List[str] = []
         self.last_message_time: Optional[float] = None  # For chat message rate limiting
-        # Cache for vote vectors to avoid duplicate LLM calls
-        self.cached_vote_turn: int = -1
-        self.cached_vote_vectors: Optional[Tuple[str, str, str]] = None
         self.my_encrypted_role: Optional[str] = None  # For blind role protocol
         self.encrypted_role_vector: Optional[str] = None  # For police investigation
         self.all_encrypted_roles: List[str] = []  # All players' encrypted roles
@@ -818,18 +815,7 @@ async def request_action(request: GameUpdateRequest):
     try:
         logger.info("-"*50)
 
-        # Vote phase cache: return cached vectors if already computed this turn
-        if request.phase == "vote" and state.cached_vote_turn == state.current_turn and state.cached_vote_vectors:
-            logger.info(f"📦 Using cached vote vectors from turn {state.current_turn}")
-            attack_b64, heal_b64, investigate_b64 = state.cached_vote_vectors
-            return ActionResponse(
-                encrypted_action=attack_b64,
-                attack_vector=attack_b64,
-                heal_vector=heal_b64,
-                investigate_vector=investigate_b64,
-                phase=request.phase
-            )
-
+        # Note: No caching for votes - agent may change mind based on new chat info
         state.action_submitted = False
         state.pending_action_target = None
         state.pending_chat_messages = []
@@ -1123,11 +1109,6 @@ Do it NOW - no more analysis needed!"""
         heal_b64 = serialize_ciphertext(state.cc, heal_vec)
         investigate_b64 = serialize_ciphertext(state.cc, investigate_vec)
 
-        # Cache vote vectors to avoid duplicate LLM calls
-        if request.phase == "vote":
-            state.cached_vote_turn = state.current_turn
-            state.cached_vote_vectors = (attack_b64, heal_b64, investigate_b64)
-            logger.info(f"💾 Cached vote vectors for turn {state.current_turn}")
 
         # Network obfuscation: 경찰이 아닌 경우도 dummy investigation packets 전송
         if request.phase == "night" and state.role != "police":

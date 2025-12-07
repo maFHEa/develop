@@ -2,11 +2,10 @@
 Night Phase Screen
 """
 from textual.app import ComposeResult
-from textual.widgets import Header, Footer, Label, RichLog, Button
+from textual.widgets import Header, Footer, Label, Button
 from textual.containers import Container, Vertical, Horizontal
 from textual.binding import Binding
 from textual.screen import Screen
-from rich.text import Text
 from typing import Optional, List
 import asyncio
 
@@ -31,25 +30,24 @@ class NightScreen(Screen):
         align: center middle;
     }
 
-    #night_panel {
-        width: 80;
+    #night_content {
+        width: 100%;
         height: auto;
-        background: $panel;
-        border: solid $primary;
-        padding: 2;
+        align: center middle;
+        content-align: center middle;
     }
 
     #night_title {
+        width: 100%;
         text-align: center;
         text-style: bold;
         color: $warning;
-        margin-bottom: 1;
     }
 
     #night_instructions {
+        width: 100%;
         text-align: center;
         color: $text-muted;
-        margin-bottom: 2;
     }
 
     #button_container {
@@ -63,9 +61,10 @@ class NightScreen(Screen):
         margin: 0 1;
     }
 
-    #night_log {
-        height: 10;
-        background: $surface-darken-1;
+    #status_text {
+        width: 100%;
+        text-align: center;
+        color: $warning;
         margin-top: 1;
     }
     """
@@ -141,8 +140,7 @@ class NightScreen(Screen):
             )
 
         with Container(id="night_container"):
-            with Vertical(id="night_panel"):
-                # 역할에 따른 타이틀
+            with Vertical(id="night_content"):
                 icon = self._get_role_icon()
                 role_names = {
                     "mafia": "마피아",
@@ -151,37 +149,24 @@ class NightScreen(Screen):
                     "citizen": "시민"
                 }
                 role_display = role_names.get(self.human_role, "시민") if self.human_role else "시민"
-                yield Label(f"{icon}  {role_display} 행동  {icon}", id="night_title")
+                yield Label(f"{icon} {role_display} {icon}", id="night_title")
 
                 if self.is_human_alive and self.human_role in ["mafia", "doctor", "police"]:
                     yield Label(self._get_role_action(), id="night_instructions")
-
                     with Horizontal(id="button_container"):
                         yield Button("확인", id="submit_btn", variant="primary", classes="action_button")
                         if self.human_role == "doctor":
                             yield Button("건너뛰기", id="skip_btn", variant="default", classes="action_button")
+                    yield Label("", id="status_text")
                 else:
                     if not self.is_human_alive:
-                        yield Label("💀 당신은 사망하여 관전 중입니다...", id="night_instructions")
+                        yield Label("💀 사망하여 관전 중", id="night_instructions")
                     else:
-                        yield Label("😴 당신은 자고 있습니다. 밤이 끝나길 기다리세요.", id="night_instructions")
-
-                yield RichLog(id="night_log", highlight=True, markup=True)
+                        yield Label("⏳ 기다리는 중...", id="night_instructions")
 
     async def on_mount(self) -> None:
         """Initialize night screen"""
-        log = self.query_one("#night_log", RichLog)
-
-        if self.is_human_alive and self.human_role in ["mafia", "doctor", "police"]:
-            log.write(Text("👆 위의 플레이어 카드를 클릭하여 대상을 선택하세요", style="cyan"))
-            log.write(Text("[확인] 버튼을 클릭하여 행동을 제출하세요", style="dim"))
-        else:
-            if not self.is_human_alive:
-                log.write(Text("💀 당신은 사망했습니다.", style="red"))
-                log.write(Text("밤 단계를 관전 중입니다...", style="dim"))
-            else:
-                log.write(Text("😴 당신은 시민입니다.", style="dim"))
-                log.write(Text("밤이 끝나길 기다리는 중...", style="dim"))
+        if not (self.is_human_alive and self.human_role in ["mafia", "doctor", "police"]):
             self.action_submitted = True
 
     def on_player_card_selected(self, event: PlayerCard.Selected) -> None:
@@ -234,6 +219,9 @@ class NightScreen(Screen):
                 pass
 
     def add_message(self, message: str, style: str = "white"):
-        """Add a message to the log"""
-        log = self.query_one("#night_log", RichLog)
-        log.write(Text(message, style=style))
+        """Update status text"""
+        try:
+            status = self.query_one("#status_text", Label)
+            status.update(message)
+        except Exception:
+            pass
