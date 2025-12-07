@@ -683,8 +683,10 @@ def create_agent_tools(state, phase: str = "setup"):
         # citizen: no night action tool needed
         
         tools.extend([
+            read_chat_messages,  # Review day's discussion before acting
             view_suspicion_notes,  # Review notes
             get_strategic_overview,  # Quick overview only
+            analyze_player_behavior,  # Analyze target before decision
         ])
         return tools
     
@@ -692,9 +694,11 @@ def create_agent_tools(state, phase: str = "setup"):
     elif phase == "vote":
         tools.extend([
             submit_vote,  # PRIMARY TOOL - must be called
+            read_chat_messages,  # Review discussion before voting
             view_suspicion_notes,  # Review notes
             get_strategic_overview,  # Quick overview only
             analyze_player_behavior,  # Analyze specific suspect
+            analyze_voting_patterns,  # Check voting blocks
         ])
         return tools
     
