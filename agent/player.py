@@ -83,6 +83,7 @@ class AgentState:
         self.role: Optional[str] = None
         self.player_index: Optional[int] = None
         self.num_players: int = 0
+        self.player_addresses: List[str] = []  # All player HTTP addresses
         self.agent: Optional[Agent] = None
         self.alive: bool = True
         self.current_phase: str = "setup"
@@ -669,6 +670,11 @@ async def blind_role_assignment(request: dict):
         
         # Store all encrypted roles for future use (e.g., police investigation)
         state.all_encrypted_roles = encrypted_roles
+        
+        # Store player addresses for network communication
+        if "player_addresses" in request:
+            state.player_addresses = request["player_addresses"]
+            logger.info(f"✓ Stored player addresses: {state.player_addresses}")
         
         logger.info(f"🔐 Starting blind role decryption for player {my_index}")
         

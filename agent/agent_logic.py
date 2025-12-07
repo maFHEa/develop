@@ -425,7 +425,7 @@ def create_agent_tools(state, phase: str = "setup"):
                 from service.crypto.serialization import serialize_ciphertext, deserialize_ciphertext
                 from service.crypto.vector_operations import homomorphic_dot_product
                 from service.crypto.roles import NUM_ROLE_TYPES
-                from service.crypto.threshold_decryption import partial_decrypt_lead, fusion_decrypt
+                from service.crypto.threshold_decryption import partial_decrypt_main, fusion_decrypt
                 
                 # Get target's encrypted role
                 target_role_enc_b64 = state.all_encrypted_roles[target_index]
@@ -437,7 +437,8 @@ def create_agent_tools(state, phase: str = "setup"):
                 investigate_result_b64 = serialize_ciphertext(state.cc, investigate_result_enc)
                 
                 # Parallel decrypt: My partial + collect from all others
-                my_partial = partial_decrypt_lead(state.cc, investigate_result_enc, state.keypair.secretKey)
+                # 🔧 CRITICAL FIX: Agent must use partial_decrypt_main, NOT partial_decrypt_lead
+                my_partial = partial_decrypt_main(state.cc, investigate_result_enc, state.keypair.secretKey)
                 all_partials = [my_partial]
                 
                 # Collect partials from all other players in parallel
@@ -487,6 +488,11 @@ def create_agent_tools(state, phase: str = "setup"):
                 # Fusion decrypt
                 final_result = fusion_decrypt(state.cc, all_partials)
                 decrypted_vector = final_result.GetPackedValue()
+                
+                # DEBUG: Log the decrypted vector
+                logger.info(f"🔍 DEBUG - Decrypted vector (first 4): {decrypted_vector[:4]}")
+                logger.info(f"🔍 DEBUG - Sum: {sum(decrypted_vector[:NUM_ROLE_TYPES])}")
+                
                 is_mafia = sum(decrypted_vector[:NUM_ROLE_TYPES]) >= 1
                 
                 # Record the result
