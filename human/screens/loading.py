@@ -56,7 +56,7 @@ class LoadingScreen(Screen):
 
         with Center(id="loading_container"):
             with Vertical(id="loading_content"):
-                yield Static("🎮 게임 초기화 중...", classes="loading_title")
+                yield Static("🎮 게임 초기화", classes="loading_title")
                 yield LoadingIndicator()
                 yield Static("", id="status_text")
 

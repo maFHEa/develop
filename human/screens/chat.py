@@ -142,8 +142,9 @@ class ChatScreen(Screen):
         try:
             chat_content = self.query_one("#chat_content", Vertical)
             chat_content.mount(Static(text, classes="chat_message"))
-            # Auto scroll to bottom after layout refresh
+            # 두 번 호출해서 레이아웃 완료 후 확실히 스크롤
             self.call_after_refresh(self._scroll_to_bottom)
+            self.set_timer(0.05, self._scroll_to_bottom)
         except Exception:
             pass
 
@@ -151,7 +152,7 @@ class ChatScreen(Screen):
         """Scroll chat to bottom"""
         try:
             scroll = self.query_one("#chat_scroll", VerticalScroll)
-            scroll.scroll_y = scroll.max_scroll_y
+            scroll.scroll_y = scroll.max_scroll_y + 100
         except Exception:
             pass
 

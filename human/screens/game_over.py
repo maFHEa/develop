@@ -3,7 +3,7 @@ Game Over Screen
 """
 from textual.app import ComposeResult
 from textual.widgets import Header, Footer, Label, Static, Button
-from textual.containers import Container, Vertical
+from textual.containers import Container, Vertical, Center
 from textual.binding import Binding
 from textual.screen import Screen
 from rich.text import Text
@@ -44,6 +44,7 @@ class GameOverScreen(Screen):
     }
 
     #winner_title {
+        width: 100%;
         text-align: center;
         text-style: bold;
         margin-bottom: 2;
@@ -54,11 +55,17 @@ class GameOverScreen(Screen):
         width: 100%;
         height: auto;
         margin-bottom: 2;
+        content-align: center middle;
+    }
+
+    #button_container {
+        width: 100%;
+        align: center middle;
+        margin-top: 2;
     }
 
     #exit_button {
         width: 20;
-        margin-top: 2;
     }
     """
 
@@ -82,7 +89,8 @@ class GameOverScreen(Screen):
             with Vertical(id="result_panel"):
                 yield Label(id="winner_title")
                 yield Static(id="roles_table")
-                yield Button("게임 종료", id="exit_button", variant="primary")
+                with Center(id="button_container"):
+                    yield Button("게임 종료", id="exit_button", variant="primary")
 
     def on_mount(self) -> None:
         """Initialize game over screen"""
