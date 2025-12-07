@@ -23,6 +23,7 @@ from agents import Agent, Runner, ToolCallItem, ToolCallOutputItem, MessageOutpu
 from model.chat import GameChatHistory, ChatMessage
 from suspicion import SuspicionNoteManager, PoliceNoteManager
 from agent_logic import create_mafia_agent, create_action_prompt
+from game_memory import GameMemorySession
 from action_handlers import (
     handle_vote_phase,
     handle_night_phase,
@@ -99,7 +100,8 @@ class AgentState:
         self.current_turn: int = 0
         self.chat_history: GameChatHistory = GameChatHistory()
         self.suspicion_notes: Optional[SuspicionNoteManager] = None
-        self.session: Optional[OpenAIConversationsSession] = None
+        self.session: Optional[OpenAIConversationsSession] = None  # OpenAI Conversations API
+        self.game_memory: Optional[GameMemorySession] = None  # SQLite for game events
         self.last_read_msg_id: int = -1
         self.pending_action_target: Optional[int] = None
         self.action_submitted: bool = False
@@ -110,6 +112,7 @@ class AgentState:
         self.all_encrypted_roles: List[str] = []  # All players' encrypted roles
         self.last_investigation_result: Optional[Dict[str, Any]] = None  # Police investigation result
         self.personality: Optional[Dict[str, Any]] = None  # Agent personality traits
+        self.chat_task: Optional[asyncio.Task] = None  # Background chat task
 
 state = AgentState()
 app = FastAPI(title="Mafia AI Agent")
@@ -487,14 +490,24 @@ async def store_investigation_result(request: dict):
     if state.role != "police":
         raise HTTPException(status_code=403, detail="Only police can receive investigation results")
     
-    state.last_investigation_result = {
-        "target": request["target"],
-        "is_mafia": request["is_mafia"]
-    }
-    
-    # Log the result
     target = request["target"]
     is_mafia = request["is_mafia"]
+    
+    state.last_investigation_result = {
+        "target": target,
+        "is_mafia": is_mafia
+    }
+    
+    # GameMemorySession에 기록
+    if state.game_memory:
+        state.game_memory.record_investigation(
+            turn=state.current_turn,
+            target_index=target,
+            is_mafia=is_mafia,
+            reasoning=f"Threshold decryption investigation result"
+        )
+    
+    # Log the result
     logger.info("=" * 60)
     logger.info("🔍 POLICE INVESTIGATION RESULT")
     logger.info(f"   Player {target} is: {'🎭 MAFIA' if is_mafia else '✅ NOT MAFIA'}")
@@ -703,8 +716,24 @@ async def complete_role_decryption(request: dict):
         else:
             state.suspicion_notes = SuspicionNoteManager(state.num_players, state.player_index)
         
-        # Initialize AI agent now that we have the role
-        # Create conversation via OpenAI API
+        # Initialize both session systems:
+        # 1. SQLite for game events (deaths, investigations, actions)
+        # Session was already created in /init, so just record role assignment
+        if state.game_memory is None:
+            session_id = f"{state.game_id}_{state.player_index}"
+            state.game_memory = GameMemorySession(session_id, db_path="game_memory.db")
+            state.game_memory.clear_session()  # Clear old data for new game
+        
+        # Record role assignment event
+        state.game_memory.record_event(
+            turn=0,
+            phase="role_assignment",
+            event_type="role_assigned",
+            data={"role": state.role, "player_index": state.player_index},
+            description=f"Role assigned: {state.role.upper()}"
+        )
+        
+        # 2. OpenAI Conversations API for chat/dialogue management
         conversation_id = await create_conversation(
             metadata={
                 "game_id": state.game_id,
@@ -751,21 +780,23 @@ async def initialize_agent(request: InitRequest):
         logger.info(f"   Waiting for blind role assignment...")
         logger.info("━" * 60)
 
-        # OpenAIConversationsSession으로 게임별, 에이전트별 대화 히스토리 관리
-        # Create conversation via OpenAI API
-        conversation_id = await create_conversation(
-            metadata={
-                "game_id": state.game_id,
-                "agent_id": str(state.agent_id),
-                "player_index": str(state.player_index),
-                "phase": "init"
-            }
+        # Initialize SQLite game memory session early (before role assignment)
+        # Session ID: gameid_agentid
+        session_id = f"{state.game_id}_{state.agent_id}"
+        state.game_memory = GameMemorySession(session_id, db_path="game_memory.db")
+        state.game_memory.clear_session()  # Clear old data for new game
+        
+        state.game_memory.record_event(
+            turn=0,
+            phase="init",
+            event_type="game_init",
+            data={"num_players": state.num_players, "player_index": state.player_index},
+            description=f"Game initialized - Player {state.player_index} of {state.num_players}"
         )
-        state.session = OpenAIConversationsSession(conversation_id=conversation_id)
-        # NOTE: OpenAIConversationsSession automatically maintains conversation history
-        # No need to clear - each game gets a unique conversation_id
+
+        # OpenAI Conversations API는 역할 할당 후에 초기화됨
+        # (role 정보가 필요하므로)
         state.last_read_msg_id = -1
-        state.agent = create_mafia_agent(state, state.role, state.player_index, state.num_players, state.game_id or "")
 
         logger.info("━" * 60)
         logger.info(f"🎮 INITIALIZED | Player #{state.player_index} | Role: {state.role.upper() if state.role else 'PENDING'}")
@@ -788,6 +819,15 @@ async def request_action(request: GameUpdateRequest):
     try:
         logger.info("-"*50)
 
+        # Cancel any running chat task when moving to action phase
+        if hasattr(state, 'chat_task') and state.chat_task and not state.chat_task.done():
+            logger.warning("⚠️  Chat task still running when action requested - cancelling")
+            state.chat_task.cancel()
+            try:
+                await state.chat_task
+            except asyncio.CancelledError:
+                logger.info("✓ Chat task cancelled before action phase")
+        
         # Reset state for new action
         state.action_submitted = False
         state.pending_action_target = None
@@ -919,6 +959,15 @@ async def receive_death_announcement(request: dict):
                 reasoning=f"사망 확인 - 역할: {role.upper()}",
                 current_turn=state.current_turn
             )
+        
+        # GameMemorySession에 기록
+        if state.game_memory:
+            state.game_memory.record_death(
+                turn=state.current_turn,
+                player_index=player_index,
+                cause="announced",
+                revealed_role=role
+            )
 
         logger.info(f"💀 사망 공지: 플레이어 {player_index} - 역할: {role.upper()}")
 
@@ -940,6 +989,16 @@ async def receive_chat_message(request: dict):
         message=message,
         turn=state.current_turn
     )
+    
+    # Record in game memory
+    if state.game_memory:
+        state.game_memory.record_event(
+            turn=state.current_turn,
+            phase="chat",
+            event_type="chat_received",
+            data={"sender": sender_index, "message": message[:100]},  # Truncate long messages
+            description=f"Received chat from Player {sender_index}"
+        )
     
     return {"status": "ok"}
 

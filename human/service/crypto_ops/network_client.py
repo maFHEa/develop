@@ -55,12 +55,12 @@ class AgentNetworkClient:
         dead_players: List[int],
         cached_results: dict = None
     ) -> List[Tuple]:
-        """Collect actions from all AI agents in parallel"""
+        """Collect actions from all AI agents in parallel (병렬화)"""
         ai_players = [p for p in players if not p.is_human]
         results = []
-        
+        tasks = []
+        # 캐시된 결과는 즉시 추가
         for player in ai_players:
-            # Use cached result if available (to avoid duplicate LLM calls)
             if cached_results and player.index in cached_results:
                 data = cached_results[player.index]
                 result = (
@@ -71,15 +71,21 @@ class AgentNetworkClient:
                 )
                 results.append((player, result))
             else:
-                # Make new request if not cached
-                try:
-                    result = await self.request_agent_action(
-                        player, phase, message, survivors, dead_players
+                tasks.append(
+                    asyncio.create_task(
+                        self.request_agent_action(player, phase, message, survivors, dead_players)
                     )
+                )
+        # 병렬 실행
+        if tasks:
+            task_results = await asyncio.gather(*tasks, return_exceptions=True)
+            # 순서대로 매칭
+            idx = 0
+            for player in ai_players:
+                if not (cached_results and player.index in cached_results):
+                    result = task_results[idx]
                     results.append((player, result))
-                except Exception as e:
-                    results.append((player, e))
-        
+                    idx += 1
         return results
     
     async def request_partial_decryption(

@@ -364,6 +364,71 @@ def create_agent_tools(state, phase: str = "setup"):
         formatted = state.suspicion_notes.format_all_notes()
         return formatted
     
+    # 2.5. Game Memory Tools
+    @function_tool
+    def view_game_history() -> str:
+        """
+        View a comprehensive summary of the game so far, including:
+        - All deaths and their causes
+        - Your investigation results (if police)
+        - Your past actions
+        - Recent game events
+        
+        Use this to refresh your memory about what happened in previous turns.
+        """
+        if state.game_memory is None:
+            return "게임 메모리가 초기화되지 않았습니다."
+        
+        summary = state.game_memory.get_game_summary()
+        logger.info(f"📚 [P{state.player_index}] Viewed game history")
+        return summary
+    
+    @function_tool
+    def view_my_actions(
+        limit: Annotated[Optional[int], "Number of recent actions to view. Default: all actions"] = None
+    ) -> str:
+        """
+        View your past actions (votes, attacks, heals, investigations).
+        Useful to remember what you did in previous turns.
+        """
+        if state.game_memory is None:
+            return "게임 메모리가 초기화되지 않았습니다."
+        
+        actions = state.game_memory.get_my_actions(limit=limit)
+        if not actions:
+            return "아직 아무 행동도 하지 않았습니다."
+        
+        lines = ["=== 나의 행동 이력 ===\n"]
+        for action in actions:
+            target_str = f" → Player {action['target_index']}" if action['target_index'] is not None else ""
+            lines.append(f"Turn {action['turn']} ({action['phase']}): {action['action_type']}{target_str}")
+            if action['reasoning']:
+                lines.append(f"  └ {action['reasoning']}")
+        
+        logger.info(f"📋 [P{state.player_index}] Viewed action history ({len(actions)} actions)")
+        return "\n".join(lines)
+    
+    @function_tool
+    def view_death_timeline() -> str:
+        """
+        View the complete timeline of all player deaths.
+        Shows who died when, how they died, and their revealed roles (if any).
+        """
+        if state.game_memory is None:
+            return "게임 메모리가 초기화되지 않았습니다."
+        
+        deaths = state.game_memory.get_all_deaths()
+        if not deaths:
+            return "아직 사망한 플레이어가 없습니다."
+        
+        lines = ["=== 💀 사망 타임라인 ===\n"]
+        for death in deaths:
+            role_str = f" ({death['revealed_role']})" if death['revealed_role'] else ""
+            lines.append(f"Turn {death['turn']}: Player {death['player_index']} - {death['cause']}{role_str}")
+        
+        logger.info(f"💀 [P{state.player_index}] Viewed death timeline ({len(deaths)} deaths)")
+        return "\n".join(lines)
+    
     # 3. Voting Tools
     @function_tool
     def submit_vote(
@@ -523,6 +588,31 @@ def create_agent_tools(state, phase: str = "setup"):
         )
         return result
     
+    @function_tool
+    def view_investigation_results() -> str:
+        """
+        POLICE ONLY: View all your past investigation results.
+        Shows confirmed MAFIA and NOT MAFIA players from your investigations.
+        """
+        if state.role != "police":
+            return "ERROR: Only Police can use this tool."
+        
+        if state.game_memory is None:
+            return "게임 메모리가 초기화되지 않았습니다."
+        
+        investigations = state.game_memory.get_investigations()
+        if not investigations:
+            return "아직 조사를 진행하지 않았습니다."
+        
+        lines = ["=== 🔍 나의 조사 결과 ===\n"]
+        for inv in investigations:
+            result = "🎭 MAFIA" if inv['is_mafia'] else "✅ NOT MAFIA"
+            lines.append(f"Turn {inv['turn']}: Player {inv['target_index']} → {result}")
+        
+        lines.append(f"\n총 {len(investigations)}명 조사 완료")
+        logger.info(f"🔍 [P{state.player_index}] Viewed investigation results")
+        return "\n".join(lines)
+    
     # 6. ADVANCED STRATEGIC TOOLS
     
     @function_tool
@@ -654,13 +744,17 @@ def create_agent_tools(state, phase: str = "setup"):
     # Build tool list dynamically based on role and phase
     tools = []
     
-    # Chat phase - full strategic tools for discussion
+    # Chat phase - LIMITED tools to prevent infinite loops
     if phase == "chat" or phase == "day":
         tools.extend([
             read_chat_messages,
             send_chat_message,
             write_suspicion_note,
             view_suspicion_notes,
+            # Game memory tools
+            view_game_history,
+            view_my_actions,
+            view_death_timeline,
             # Advanced strategic tools for discussion
             analyze_player_behavior,
             get_strategic_overview,
@@ -669,6 +763,11 @@ def create_agent_tools(state, phase: str = "setup"):
             predict_next_target,
             detect_lies_and_contradictions
         ])
+        
+        # Police-specific tools (경찰만)
+        if state.role == "police":
+            tools.append(view_investigation_results)
+        
         return tools
     
     # Night phase - focus on action, limited analysis
@@ -685,9 +784,17 @@ def create_agent_tools(state, phase: str = "setup"):
         tools.extend([
             read_chat_messages,  # Review day's discussion before acting
             view_suspicion_notes,  # Review notes
+            view_game_history,  # Review game events
+            view_my_actions,  # Check past actions
+            view_death_timeline,  # Analyze death patterns
             get_strategic_overview,  # Quick overview only
             analyze_player_behavior,  # Analyze target before decision
         ])
+        
+        # Police-specific tools
+        if state.role == "police":
+            tools.append(view_investigation_results)
+        
         return tools
     
     # Vote phase - focus on voting decision
@@ -696,10 +803,17 @@ def create_agent_tools(state, phase: str = "setup"):
             submit_vote,  # PRIMARY TOOL - must be called
             read_chat_messages,  # Review discussion before voting
             view_suspicion_notes,  # Review notes
+            view_game_history,  # Review game events
+            view_death_timeline,  # Check who died
             get_strategic_overview,  # Quick overview only
             analyze_player_behavior,  # Analyze specific suspect
             analyze_voting_patterns,  # Check voting blocks
         ])
+        
+        # Police-specific tools
+        if state.role == "police":
+            tools.append(view_investigation_results)
+        
         return tools
     
     # Default/setup phase - basic tools
@@ -707,6 +821,7 @@ def create_agent_tools(state, phase: str = "setup"):
         tools.extend([
             write_suspicion_note,
             view_suspicion_notes,
+            view_game_history,
         ])
         return tools
 # ============================================================================
@@ -751,11 +866,31 @@ def create_mafia_agent(state, role: str, player_index: int, num_players: int, ga
     personality = generate_personality(player_index, game_id)
     state.personality = personality  # state에 저장해서 일관성 유지
 
+
     role_instruction = get_role_instructions(role, player_index)
     personality_prompt = get_personality_prompt(personality, role)
     tools = create_agent_tools(state)
 
-    # 2. 덜 지시적이고 더 자유로운 프롬프트
+    # 역할별 전략 안내
+    police_strategy = ""
+    mafia_strategy = ""
+    doctor_strategy = ""
+    vote_info = ""
+    if role == "police":
+        police_strategy = "🕵️ 경찰 전략:\n- 마피아 발견 시: 투표 직전 공개 추천\n- 시민 확인 시: 필요할 때만 공개\n- 역할 노출 위험 시: 우회적 표현 사용"
+    elif role == "mafia":
+        mafia_strategy = "🎭 마피아 협력 전략:\n- 같은 사람 반복적으로 언급해 타겟 지정\n- 서로 변명/방어 메시지 교환\n- 투표 패턴 일부러 다르게 하여 의심 피하기"
+    elif role == "doctor":
+        doctor_strategy = "💊 의사 전략:\n- 내가 의심받거나 마피아 타겟일 때 자힐 추천\n- 경찰/신뢰 시민 보호 필요 시 타인 힐"
+
+    # 투표 단계 정보 요약 (game_memory, suspicion_notes 활용)
+    if hasattr(state, 'game_memory') and state.game_memory and hasattr(state, 'suspicion_notes') and state.suspicion_notes:
+        police_summary = state.suspicion_notes.get_police_summary() if hasattr(state.suspicion_notes, 'get_police_summary') else ""
+        suspicion_summary = state.suspicion_notes.get_top_suspects() if hasattr(state.suspicion_notes, 'get_top_suspects') else ""
+        vote_summary = state.game_memory.get_recent_votes() if hasattr(state.game_memory, 'get_recent_votes') else ""
+        defense_summary = state.game_memory.get_defense_messages() if hasattr(state.game_memory, 'get_defense_messages') else ""
+        vote_info = f"\n=== 투표 단계 정보 요약 ===\n📋 경찰 조사 결과: {police_summary}\n🗳️ 최근 투표 패턴: {vote_summary}\n🔍 주요 의심 대상: {suspicion_summary}\n🛡️ 변명/방어 메시지: {defense_summary}"
+
     instructions = f"""너는 마피아 게임을 하는 사람이야. 진짜 사람처럼 행동해.
 
 === 기본 정보 ===
@@ -765,10 +900,30 @@ Player {player_index} | 총 {num_players}명
 
 {personality_prompt}
 
-=== 필수 행동 ===
-• 밤(night) 단계: 역할별 전용 도구 호출 (mafia_kill/doctor_heal/police_investigate/citizen_sleep)
-• 투표(vote) 단계: submit_vote(target) 호출
-• 채팅(chat) 단계: read_chat_messages()로 읽고, send_chat_message()로 대화
+{police_strategy}
+{mafia_strategy}
+{doctor_strategy}
+{vote_info}
+
+=== ⚠️ 게임 진행을 위한 필수 규칙 ⚠️ ===
+**중요! 게임이 멈추지 않으려면 반드시 지켜야 함:**
+
+1️⃣ 밤(night) 단계에서:
+   - 마피아: mafia_kill(target) 반드시 호출
+   - 의사: doctor_heal(target) 반드시 호출
+   - 경찰: police_investigate(target) 반드시 호출
+   - 시민: 아무것도 안 해도 됨
+   
+2️⃣ 투표(vote) 단계에서:
+   - submit_vote(target) 반드시 호출 (모든 역할)
+   
+3️⃣ 채팅(chat) 단계에서:
+   - read_chat_messages() 확인하고 send_chat_message() 선택적 사용
+
+⛔ **절대 하지 말 것:**
+- 정보 조사만 하고 필수 행동 안 하기 → 게임 멈춤!
+- view_game_history() 같은 거 여러 번 반복 → 시간 낭비!
+- 필수 행동은 한 번에 빠르게 결정해서 호출!
 
 === 금지 사항 ===
 • "저는 AI입니다" 같은 메타 발언 금지
@@ -793,51 +948,104 @@ Player {player_index} | 총 {num_players}명
     )
 
 
-def create_action_prompt(phase: str, turn: int, survivors_str: str, dead_str: str, role: str, message: str) -> str:
-    """행동 단계(밤/투표)용 프롬프트 - 더 간결하게"""
+def create_action_prompt(phase: str, turn: int, survivors_str: str, dead_str: str, role: str, message: str, state=None) -> str:
+    """행동 단계(밤/투표)용 프롬프트 - 스마트 컨텍스트 자동 포함 + 빠른 결정"""
+    
 
-    # 역할별 간단한 힌트
+    # 정보 요약 생성
+    police_summary = ""
+    vote_summary = ""
+    suspicion_summary = ""
+    defense_summary = ""
+    mafia_coordination = ""
+    doctor_strategy = ""
+    tool_guide = ""
+
+    if state:
+        if hasattr(state, 'suspicion_notes') and state.suspicion_notes:
+            police_summary = state.suspicion_notes.get_police_summary() if hasattr(state.suspicion_notes, 'get_police_summary') else ""
+            suspicion_summary = state.suspicion_notes.get_top_suspects() if hasattr(state.suspicion_notes, 'get_top_suspects') else ""
+        if hasattr(state, 'game_memory') and state.game_memory:
+            vote_summary = state.game_memory.get_recent_votes() if hasattr(state.game_memory, 'get_recent_votes') else ""
+            defense_summary = state.game_memory.get_defense_messages() if hasattr(state.game_memory, 'get_defense_messages') else ""
+
+    # 역할별 전략 안내
+    if role == "police":
+        mafia_coordination = "🕵️ 경찰 전략:\n- 마피아 발견 시: 투표 직전 공개 추천\n- 시민 확인 시: 필요할 때만 공개\n- 역할 노출 위험 시: 우회적 표현 사용"
+        tool_guide = "[추천 툴 사용 순서]\n1. view_suspicion_notes() - 조사 결과 확인\n2. write_suspicion_note() - 의심 메모 기록\n3. read_chat_messages() - 대화 확인\n4. police_investigate(target) - 조사 대상 선택"
+    elif role == "mafia":
+        mafia_coordination = "🎭 마피아 협력 전략:\n- 같은 사람 반복적으로 언급해 타겟 지정\n- 서로 변명/방어 메시지 교환\n- 투표 패턴 일부러 다르게 하여 의심 피하기"
+        tool_guide = "[추천 툴 사용 순서]\n1. read_chat_messages() - 대화 확인\n2. view_game_history() - 게임 흐름 파악\n3. mafia_kill(target) - 밤 행동"
+    elif role == "doctor":
+        doctor_strategy = "💊 의사 전략:\n- 내가 의심받거나 마피아 타겟일 때 자힐 추천\n- 경찰/신뢰 시민 보호 필요 시 타인 힐"
+        tool_guide = "[추천 툴 사용 순서]\n1. view_game_history() - 게임 흐름 파악\n2. doctor_heal(target) - 밤 행동"
+    elif role == "citizen":
+        tool_guide = "[추천 툴 사용 순서]\n1. read_chat_messages() - 대화 확인\n2. view_game_history() - 게임 흐름 파악\n3. submit_vote(target) - 투표"
+
+    # 스마트 컨텍스트 자동 생성 (state가 있고 game_memory가 있을 때)
+    smart_context = ""
+    if state and hasattr(state, 'game_memory') and state.game_memory:
+        smart_context = state.game_memory.get_smart_context_for_phase(phase, role)
+
+    # 역할별 필수 행동 도구
     if phase == "night":
         if role == "mafia":
             action_tool = "mafia_kill"
-            hint = "누구 죽일지 골라. 뻔한 선택 말고 생각해봐."
+            hint = "🔪 누구 죽일지 바로 골라"
         elif role == "doctor":
             action_tool = "doctor_heal"
-            hint = "누구 살릴지 골라. 자기 자신도 가능."
+            hint = "💊 누구 살릴지 바로 골라"
         elif role == "police":
             action_tool = "police_investigate"
-            hint = "누구 조사할지 골라. 결과 바로 알려줌."
+            hint = "🔍 누구 조사할지 바로 골라"
+        else:  # citizen
+            action_tool = "citizen_sleep"
+            hint = "😴 시민은 잠만 자면 됨"
     else:  # vote phase
         action_tool = "submit_vote"
-        hint = "누가 마피아 같아? 투표해."
+        hint = "🗳️ 누구 투표할지 바로 골라"
 
-    # Vote phase에서는 대화 기록 요약 요청 추가
-    conversation_summary_prompt = ""
-    if phase == "vote":
-        conversation_summary_prompt = """
-🧠 투표하기 전에:
-1. 지금까지의 대화 내용을 떠올려봐 (방금까지 누가 뭐라 했는지)
-2. 경찰 조사 결과가 있었는지 생각해봐
-3. 의심스러운 발언이나 행동이 있었는지 기억해봐
-4. 투표 이유를 논리적으로 설명할 수 있어야 해
+    prompt_text = (
+        f"{'🌙 밤' if phase == 'night' else '🗳️ 투표'} 단계 (Day {turn})\n\n"
+        f"생존: [{survivors_str}]\n"
+        f"사망: [{dead_str}]\n"
+    )
+    if police_summary:
+        prompt_text += f"\n📋 경찰 조사 결과: {police_summary}"
+    if vote_summary:
+        prompt_text += f"\n🗳️ 최근 투표 패턴: {vote_summary}"
+    if suspicion_summary:
+        prompt_text += f"\n🔍 주요 의심 대상: {suspicion_summary}"
+    if defense_summary:
+        prompt_text += f"\n🛡️ 변명/방어 메시지: {defense_summary}"
+    prompt_parts = [prompt_text]
 
-중요한 정보를 놓치지 마! 특히:
-- 경찰이 마피아라고 밝힌 사람
-- 변명이 이상했던 사람
-- 투표 패턴이 수상한 사람
-"""
+    # 전략 안내 및 툴 사용 가이드 추가
+    if mafia_coordination:
+        prompt_parts.append(mafia_coordination)
+    if doctor_strategy:
+        prompt_parts.append(doctor_strategy)
+    if tool_guide:
+        prompt_parts.append(tool_guide)
 
-    return f"""{'밤' if phase == 'night' else '투표'} 단계 (Day {turn})
+    # 스마트 컨텍스트가 있으면 추가 (이미 분석된 정보)
+    if smart_context:
+        prompt_parts.append(f"\n{smart_context}")
 
-생존: [{survivors_str}]
-사망: [{dead_str}]
+    prompt_parts.append(f"""
 
 {message}
 
 {hint}
-{conversation_summary_prompt}
 
-⚠️ 반드시 {action_tool}(숫자) 호출해야 함!"""
+⚡ **지금 바로 행동해!**
+→ {action_tool}(target_index) 호출하면 끝!
+{f"→ 생존자 중 선택: {survivors_str}" if phase == "vote" or role != "citizen" else ""}
+
+⛔ **경고**: {action_tool}() 안 부르면 게임 멈춤!
+💡 **팁**: 위 정보로 충분해. 추가 정보 수집 안 해도 돼!""")
+
+    return "\n".join(prompt_parts)
 
 
 def create_chat_prompt(turn: int, survivors_str: str, dead_str: str, role: str, message: str, remaining_time: int) -> str:
@@ -845,7 +1053,7 @@ def create_chat_prompt(turn: int, survivors_str: str, dead_str: str, role: str, 
 
     # 시간대별 분위기
     if remaining_time > 60:
-        time_hint = ""
+        time_hint = "(충분한 시간)"
     elif remaining_time > 30:
         time_hint = "(시간 좀 남음)"
     elif remaining_time > 10:
@@ -863,21 +1071,30 @@ def create_chat_prompt(turn: int, survivors_str: str, dead_str: str, role: str, 
     if alive_count <= 3:
         situation = "몇 명 안 남았어. 신중하게."
 
-    return f"""토론 시간 (Day {turn}) {time_hint}
+    return f"""🗣️ 토론 시간 (Day {turn}) {time_hint}
 
 생존: [{survivors_str}]
 사망: [{dead_str}]
 
 {message}
-
 {situation}
 
-할 일:
-1. read_chat_messages() - 남들 뭐라 하는지 확인
-2. 대화에 참여하거나 관찰 (send_chat_message)
-3. 의심되는 사람 있으면 말해도 되고 눈치봐도 됨
+⚡ **빠르게 행동해 (도구 호출 최대 3번까지!):**
 
-팁:
-- 매번 말할 필요 없어. 할 말 있을 때만 해.
-- 다른 사람 말에 반응해. 무시하면 이상해.
-- 질문받으면 대답해."""
+1️⃣ read_chat_messages() - 다른 사람들 대화 1번만 확인
+2️⃣ 선택:
+   A) send_chat_message("메시지") - 할 말 있으면 대화
+   B) 또는 그냥 조용히 관찰 (아무것도 안 해도 됨)
+
+⛔ **하지 마:**
+- view_game_history() 반복 호출 - 시간 낭비!
+- view_death_timeline() 반복 호출 - 1번이면 충분!
+- 같은 도구 여러 번 호출 - 빠르게 결정해!
+
+💡 **팁:**
+- 할 말 없으면 그냥 넘어가도 됨 (관찰도 전략)
+- 너무 분석하지 마 - 직감으로 빠르게
+- 매번 말할 필요 없어 - 필요할 때만
+- 질문받으면 간단하게 대답
+
+🎯 **목표: 30초 안에 끝내기!**"""

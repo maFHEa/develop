@@ -167,7 +167,8 @@ async def handle_vote_phase(state, request) -> Tuple[str, str, str]:
         survivors_str=survivors_str,
         dead_str=dead_str,
         role=state.role,
-        message=request.message
+        message=request.message,
+        state=state  # 스마트 컨텍스트 생성을 위해 state 전달
     )
     
     logger.debug(f"AI Prompt:\n{prompt}")
@@ -185,9 +186,29 @@ async def handle_vote_phase(state, request) -> Tuple[str, str, str]:
             state.joint_public_key
         )
         logger.info(f"🗳️ Vote: Player {state.pending_action_target}")
+        
+        # Record vote action in game memory
+        if state.game_memory:
+            state.game_memory.record_action(
+                turn=state.current_turn,
+                phase="vote",
+                action_type="vote",
+                target_index=state.pending_action_target,
+                reasoning=f"Voted for Player {state.pending_action_target}"
+            )
     else:
         vote_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
         logger.info("🗳️ Vote: Abstained")
+        
+        # Record abstention
+        if state.game_memory:
+            state.game_memory.record_action(
+                turn=state.current_turn,
+                phase="vote",
+                action_type="abstain",
+                target_index=None,
+                reasoning="Abstained from voting"
+            )
     
     # Heal and investigate are not used in vote phase
     attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
@@ -231,7 +252,8 @@ async def handle_night_phase(state, request) -> Optional[int]:
         survivors_str=survivors_str,
         dead_str=dead_str,
         role=state.role,
-        message=request.message
+        message=request.message,
+        state=state  # 스마트 컨텍스트 생성을 위해 state 전달
     )
     
     logger.debug(f"AI Prompt:\n{prompt}")
@@ -301,8 +323,17 @@ async def handle_chat_phase(state, request) -> Tuple[str, str, str]:
         
         logger.info(f"💬 Chat phase ended - {chat_round} rounds, {len(state.pending_chat_messages)} messages sent")
     
-    # Start chat in background
-    asyncio.create_task(run_chat_loop())
+    # Cancel any existing chat task first
+    if hasattr(state, 'chat_task') and state.chat_task and not state.chat_task.done():
+        logger.warning("⚠️  Previous chat task still running - cancelling it")
+        state.chat_task.cancel()
+        try:
+            await state.chat_task
+        except asyncio.CancelledError:
+            logger.info("✓ Previous chat task cancelled")
+    
+    # Start chat in background and store task reference
+    state.chat_task = asyncio.create_task(run_chat_loop())
     logger.info("💬 Chat phase started in background - returning immediately")
     
     # Return zero vectors (no action needed in chat phase)
@@ -340,14 +371,50 @@ def generate_night_work_vectors(state, phase: str, target_index: Optional[int]) 
         if state.role == "mafia" and target_index is not None:
             attack_vec = _generate_night_vectors(state, target_index)
             logger.info(f"🔪 Mafia → P{target_index}")
+            
+            # Record action in game memory
+            if state.game_memory:
+                state.game_memory.record_action(
+                    turn=state.current_turn,
+                    phase="night",
+                    action_type="attack",
+                    target_index=target_index,
+                    reasoning=f"Mafia attacked Player {target_index}"
+                )
         elif state.role == "doctor" and target_index is not None:
             heal_vec = _generate_night_vectors(state, target_index)
             logger.info(f"💊 Doctor → P{target_index}")
+            
+            # Record action in game memory
+            if state.game_memory:
+                state.game_memory.record_action(
+                    turn=state.current_turn,
+                    phase="night",
+                    action_type="heal",
+                    target_index=target_index,
+                    reasoning=f"Doctor healed Player {target_index}"
+                )
         elif state.role == "citizen":
-            pass  # No log for citizen
+            # Record citizen abstention
+            if state.game_memory:
+                state.game_memory.record_action(
+                    turn=state.current_turn,
+                    phase="night",
+                    action_type="none",
+                    target_index=None,
+                    reasoning="Citizen has no night action"
+                )
         # Police investigation은 client-side에서 처리, 서버에는 dummy만 전송
         elif state.role == "police":
-            pass  # No log for police (investigation handled client-side)
+            # Record police action (target will be recorded when investigation result comes)
+            if state.game_memory and target_index is not None:
+                state.game_memory.record_action(
+                    turn=state.current_turn,
+                    phase="night",
+                    action_type="investigate_request",
+                    target_index=target_index,
+                    reasoning=f"Police requested investigation of Player {target_index}"
+                )
     
     # Serialize
     vote_b64 = serialize_ciphertext(state.cc, vote_vec)

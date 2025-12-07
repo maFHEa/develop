@@ -168,7 +168,7 @@
 - [ ] 타임아웃 없이 완료
 
 #### 5.3 Day Phase - 채팅 및 추론
-- [ ] 다른 플레이어 메시지 읽기
+- [o] 다른 플레이어 메시지 읽기
 - [ ] 의심되는 플레이어에 대한 채팅 전송
 - [ ] Suspicion notes 업데이트
 
@@ -191,10 +191,10 @@
 - [ ] AI에게 역할별 지시사항 전달
 
 #### 6.2 Night Phase - 치료 대상 선택
-- [ ] AI가 `submit_night_action(target_index)` 호출
-- [ ] 유효한 타겟 선택
-- [ ] One-hot vector 생성 및 암호화
-- [ ] 제출 완료
+- [o] AI가 `submit_night_action(target_index)` 호출
+- [o] 유효한 타겟 선택
+- [o] One-hot vector 생성 및 암호화
+- [o] 제출 완료
 
 #### 6.3 치료 전략
 - [ ] AI가 의심받는 플레이어 보호
