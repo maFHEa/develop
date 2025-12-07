@@ -13,6 +13,7 @@ from service.crypto.serialization import serialize_ciphertext, deserialize_ciphe
 from agent_logic import create_agent_tools, create_action_prompt, create_chat_prompt
 
 logger = logging.getLogger(__name__)
+logger.propagate = False  # Prevent duplicate logs
 
 
 # ============================================================================
@@ -68,13 +69,24 @@ def log_ai_interaction(result):
 
 async def call_ai_with_retry(state, prompt: str, max_turns: int = 20) -> bool:
     """AI 호출 및 자동 재시도 (action이 제출되지 않으면 리마인더 전송)"""
-    # Initial AI call
-    result = await Runner.run(
-        starting_agent=state.agent,
-        input=prompt,
-        session=state.session,
-        max_turns=max_turns
-    )
+    # Initial AI call with conversation lock retry
+    max_lock_retries = 3
+    for attempt in range(max_lock_retries):
+        try:
+            result = await Runner.run(
+                starting_agent=state.agent,
+                input=prompt,
+                session=state.session,
+                max_turns=max_turns
+            )
+            break  # Success
+        except Exception as e:
+            if "conversation_lock_failed" in str(e) and attempt < max_lock_retries - 1:
+                wait_time = (attempt + 1) * 0.5  # 0.5s, 1s, 1.5s
+                logger.warning(f"🔒 Conversation lock failed, retrying in {wait_time}s... (attempt {attempt + 1}/{max_lock_retries})")
+                await asyncio.sleep(wait_time)
+            else:
+                raise  # Re-raise if not lock error or max retries exceeded
     
     log_ai_interaction(result)
     
@@ -101,12 +113,23 @@ ALIVE players: {survivors_list}
 Do it NOW - no more analysis needed!"""
     
     try:
-        retry_result = await Runner.run(
-            starting_agent=state.agent,
-            input=reminder_prompt,
-            session=state.session,
-            max_turns=3
-        )
+        # Retry with lock handling
+        for attempt in range(max_lock_retries):
+            try:
+                retry_result = await Runner.run(
+                    starting_agent=state.agent,
+                    input=reminder_prompt,
+                    session=state.session,
+                    max_turns=3
+                )
+                break  # Success
+            except Exception as retry_err:
+                if "conversation_lock_failed" in str(retry_err) and attempt < max_lock_retries - 1:
+                    wait_time = (attempt + 1) * 0.5
+                    logger.warning(f"🔒 Retry lock failed, waiting {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
         
         if state.action_submitted:
             logger.info("✅ AI submitted action after reminder")
@@ -191,10 +214,8 @@ async def handle_night_phase(state, request) -> Optional[int]:
     
     # 시민인 경우 시간을 지연하고 실제로 vector 만들 때 0 벡터 생성을 함.
     if state.role == "citizen":
-        delay = random.uniform(5.0, 9.0)
-        logger.info(f"😴 Citizen has no night action - waiting {delay:.1f}s for timing...")
+        delay = random.uniform(1.0, 2.5)  # Reduced from 3-7s to 1-2.5s
         await asyncio.sleep(delay)
-        logger.info("✓ Citizen zero dummy vectors ready")
         state.pending_action_target = None
         state.action_submitted = True
         asyncio.create_task(send_dummy_investigation_packets(state))
@@ -305,8 +326,6 @@ def generate_night_work_vectors(state, phase: str, target_index: Optional[int]) 
     
     Returns: (vote_b64, attack_b64, heal_b64)
     """
-    logger.info("🎭 BLIND PROTOCOL: Generating 3 encrypted vectors (vote/attack/heal)")
-    
     # Vote phase: vote_vector에 투표 저장
     if phase == "vote":
         return generate_vote_vector(state, target_index)
@@ -320,15 +339,15 @@ def generate_night_work_vectors(state, phase: str, target_index: Optional[int]) 
         # Role-specific vector generation
         if state.role == "mafia" and target_index is not None:
             attack_vec = _generate_night_vectors(state, target_index)
-            logger.info(f"🔪 Mafia attack: Player {target_index}")
+            logger.info(f"🔪 Mafia → P{target_index}")
         elif state.role == "doctor" and target_index is not None:
             heal_vec = _generate_night_vectors(state, target_index)
-            logger.info(f"💊 Doctor heal: Player {target_index}")
+            logger.info(f"💊 Doctor → P{target_index}")
         elif state.role == "citizen":
-            logger.info("😴 Citizen: No action (all zero vectors)")
+            pass  # No log for citizen
         # Police investigation은 client-side에서 처리, 서버에는 dummy만 전송
         elif state.role == "police":
-            logger.info("🔍 Police: Investigation handled client-side (zero vectors to server)")
+            pass  # No log for police (investigation handled client-side)
     
     # Serialize
     vote_b64 = serialize_ciphertext(state.cc, vote_vec)
@@ -342,10 +361,10 @@ def generate_vote_vector(state, target_index: Optional[int]):
         vote_vec = create_one_hot_vector(
             state.num_players, target_index, state.cc, state.joint_public_key
         )
-        logger.info(f"🗳️ Vote: Player {target_index}")
+        logger.info(f"🗳️ Vote → P{target_index}")
     else:
         vote_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-        logger.info("🗳️ Vote: Abstained")
+        logger.info("🗳️ Vote: Abstain")
     
     attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
     heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
@@ -378,10 +397,6 @@ async def send_dummy_investigation_packets(state):
     모든 플레이어가 네트워크 obfuscation을 위해 dummy investigation packet 전송
     경찰의 실제 조사 패킷과 비경찰의 dummy 패킷이 비슷한 시간대에 전송되도록 함
     """
-    delay = random.uniform(2.0, 5.0)
-    await asyncio.sleep(delay)
-    
-    logger.info(f"🕵️ Sending dummy investigation packets (role: {state.role})")
     
     dummy_ciphertext = serialize_ciphertext(
         state.cc,
@@ -389,7 +404,6 @@ async def send_dummy_investigation_packets(state):
     )
     
     # Send to all other players
-    import httpx
     tasks = []
     for i in range(state.num_players):
         if i != state.player_index:
@@ -403,8 +417,6 @@ async def send_dummy_investigation_packets(state):
     
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
-    
-    logger.info(f"🕵️ Dummy packets sent to {len(tasks)} players")
 
 
 async def _send_single_dummy_packet(address: str, ciphertext_b64: str):

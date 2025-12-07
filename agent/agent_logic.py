@@ -13,15 +13,7 @@ from service.agent.agent_service import _execute_police_investigation
 # Configure logger for agent_logic module
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-# Ensure logs directory exists and add handler if not already added
-if not logger.handlers:
-    os.makedirs('logs', exist_ok=True)
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+# Don't add custom handler - use uvicorn's logging format
 
 
 # ============================================================================
@@ -281,7 +273,6 @@ def create_agent_tools(state, phase: str = "setup"):
         if start_id is None:
             start_id = state.last_read_msg_id + 1
         
-        logger.info(f"📖 Reading messages from ID {start_id}")
         messages = state.chat_history.get_messages_from(start_id)
         
         # Update last read position to latest
@@ -289,19 +280,22 @@ def create_agent_tools(state, phase: str = "setup"):
         if latest_id >= 0:
             state.last_read_msg_id = latest_id
         
-        if messages:
-            logger.info(f"📬 Found {len(messages)} new message(s)")
-        else:
-            logger.info("📭 No new messages")
+        if not messages:
+            return "📭 대화방에 새 메시지가 없습니다."
+        
+        # Log what agent READ
+        for msg in messages:
+            logger.info(f"📖 [P{state.player_index}] READ: [P{msg.player_index}] {msg.message}")
         
         # Add game state context to help agent understand situation
         alive_players = [i for i in range(state.num_players) if i in getattr(state, 'survivors', [])]
         dead_players = [i for i in range(state.num_players) if i not in alive_players]
         
-        context = f"\n🎮 GAME STATE:\n"
-        context += f"🟢 Alive: {len(alive_players)} players {alive_players}\n"
-        context += f"💀 Dead: {len(dead_players)} players {dead_players}\n"
-        context += f"📊 Day: {state.current_turn}\n\n"
+        context = f"🎮 현재 게임 상태:\n"
+        context += f"  🟢 생존: {len(alive_players)}명 {alive_players}\n"
+        context += f"  💀 사망: {len(dead_players)}명 {dead_players}\n"
+        context += f"  📊 Day {state.current_turn}\n\n"
+        context += f"💬 새로운 대화 ({len(messages)}개):\n"
         
         formatted = context + state.chat_history.format_messages(messages)
         return formatted
@@ -330,7 +324,8 @@ def create_agent_tools(state, phase: str = "setup"):
 
         state.last_message_time = current_time
 
-        logger.info(f"💬 Sending message: \"{message[:80]}{'...' if len(message) > 80 else ''}\"")
+        # Log who SENT the message
+        logger.info(f"💬 [P{state.player_index}] SENT: {message}")
 
         # Queue message - host will poll for it
         state.pending_chat_messages.append(message)
@@ -352,7 +347,7 @@ def create_agent_tools(state, phase: str = "setup"):
         if state.suspicion_notes is None:
             return "의심 메모가 초기화되지 않았습니다."
         
-        logger.info(f"📝 Suspicion note: Player {player_index} = {suspicion_level.upper()} (reason: {reasoning[:50]}...)")
+        logger.info(f"📝 [P{state.player_index}] Suspects P{player_index}: {suspicion_level}")
         result = state.suspicion_notes.write_note(
             target_index=player_index,
             level=suspicion_level,
@@ -366,8 +361,6 @@ def create_agent_tools(state, phase: str = "setup"):
         """View all your suspicion notes about other players."""
         if state.suspicion_notes is None:
             return "Suspicion notes not initialized."
-        
-        logger.info("📋 Reviewing suspicion notes")
         formatted = state.suspicion_notes.format_all_notes()
         return formatted
     
@@ -389,12 +382,12 @@ def create_agent_tools(state, phase: str = "setup"):
         if 0 <= target_index < state.num_players and target_index != state.player_index:
             state.pending_action_target = target_index
             state.action_submitted = True
-            logger.info(f"✅ Vote submitted: Target=Player {target_index}")
+            logger.info(f"🗳️ [P{state.player_index}] VOTED → P{target_index}")
             return f"Vote submitted: Player {target_index}"
         else:
             state.pending_action_target = None
             state.action_submitted = True
-            logger.info("➖ Vote: Abstained")
+            logger.info(f"🗳️ [P{state.player_index}] ABSTAINED")
             return "Vote abstained"
     
     # 4. Night Action Tools (Role-specific)
@@ -425,12 +418,11 @@ def create_agent_tools(state, phase: str = "setup"):
         if 0 <= target_index < state.num_players and target_index != state.player_index:
             state.pending_action_target = target_index
             state.action_submitted = True
-            logger.info(f"✅ Mafia kill: Player {target_index}")
+            logger.info(f"🔪 [P{state.player_index}] KILL → P{target_index}")
             return f"Mafia kill: Player {target_index}"
         else:
             state.pending_action_target = None
             state.action_submitted = True
-            logger.info("➖ Mafia kill: Invalid target")
             return "Mafia kill: Invalid target (cannot kill yourself or out of range)"
     
     @function_tool
@@ -460,13 +452,12 @@ def create_agent_tools(state, phase: str = "setup"):
         if 0 <= target_index < state.num_players:
             state.pending_action_target = target_index
             state.action_submitted = True
-            target_desc = "yourself" if target_index == state.player_index else f"Player {target_index}"
-            logger.info(f"✅ Doctor heal: {target_desc}")
+            target_desc = "SELF" if target_index == state.player_index else f"P{target_index}"
+            logger.info(f"💊 [P{state.player_index}] HEAL → {target_desc}")
             return f"Doctor heal: {target_desc}"
         else:
             state.pending_action_target = None
             state.action_submitted = True
-            logger.info("➖ Doctor heal: Invalid target")
             return "Doctor heal: Invalid target (out of range)"
     
     @function_tool
@@ -488,9 +479,11 @@ def create_agent_tools(state, phase: str = "setup"):
             try:
                 # _execute_police_investigation already records result in suspicion notes
                 result_message = await _execute_police_investigation(state, target_index)
+                # Log investigation action (result will be logged by service)
+                logger.info(f"🔍 [P{state.player_index}] INVESTIGATE → P{target_index}")
                 return result_message
             except Exception as e:
-                logger.error(f"❌ Investigation failed: {e}")
+                logger.error(f"❌ [P{state.player_index}] Investigation failed: {e}")
                 import traceback
                 traceback.print_exc()
                 state.action_submitted = True
@@ -498,7 +491,6 @@ def create_agent_tools(state, phase: str = "setup"):
         else:
             state.pending_action_target = None
             state.action_submitted = True
-            logger.info("➖ Police investigation: Invalid target")
             return "Police investigation: Invalid target (cannot investigate yourself or out of range)"
     
     # 5. Police-only Investigation Recording Tool
@@ -815,6 +807,22 @@ def create_action_prompt(phase: str, turn: int, survivors_str: str, dead_str: st
         action_tool = "submit_vote"
         hint = "누가 마피아 같아? 투표해."
 
+    # Vote phase에서는 대화 기록 요약 요청 추가
+    conversation_summary_prompt = ""
+    if phase == "vote":
+        conversation_summary_prompt = """
+🧠 투표하기 전에:
+1. 지금까지의 대화 내용을 떠올려봐 (방금까지 누가 뭐라 했는지)
+2. 경찰 조사 결과가 있었는지 생각해봐
+3. 의심스러운 발언이나 행동이 있었는지 기억해봐
+4. 투표 이유를 논리적으로 설명할 수 있어야 해
+
+중요한 정보를 놓치지 마! 특히:
+- 경찰이 마피아라고 밝힌 사람
+- 변명이 이상했던 사람
+- 투표 패턴이 수상한 사람
+"""
+
     return f"""{'밤' if phase == 'night' else '투표'} 단계 (Day {turn})
 
 생존: [{survivors_str}]
@@ -823,6 +831,7 @@ def create_action_prompt(phase: str, turn: int, survivors_str: str, dead_str: st
 {message}
 
 {hint}
+{conversation_summary_prompt}
 
 ⚠️ 반드시 {action_tool}(숫자) 호출해야 함!"""
 

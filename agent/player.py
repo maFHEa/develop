@@ -16,8 +16,9 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException
 import uvicorn
 from openfhe import BINARY
+from openai import AsyncOpenAI
 
-from agents import Agent, Runner, ToolCallItem, ToolCallOutputItem, MessageOutputItem, ItemHelpers, SQLiteSession
+from agents import Agent, Runner, ToolCallItem, ToolCallOutputItem, MessageOutputItem, ItemHelpers, OpenAIConversationsSession
 
 from model.chat import GameChatHistory, ChatMessage
 from suspicion import SuspicionNoteManager, PoliceNoteManager
@@ -98,7 +99,7 @@ class AgentState:
         self.current_turn: int = 0
         self.chat_history: GameChatHistory = GameChatHistory()
         self.suspicion_notes: Optional[SuspicionNoteManager] = None
-        self.session: Optional[SQLiteSession] = None
+        self.session: Optional[OpenAIConversationsSession] = None
         self.last_read_msg_id: int = -1
         self.pending_action_target: Optional[int] = None
         self.action_submitted: bool = False
@@ -112,6 +113,33 @@ class AgentState:
 
 state = AgentState()
 app = FastAPI(title="Mafia AI Agent")
+
+# OpenAI client for conversation management (lazy initialization)
+openai_client: Optional[AsyncOpenAI] = None
+
+
+def get_openai_client() -> AsyncOpenAI:
+    """OpenAI client를 lazy하게 초기화 (OPENAI_API_KEY가 설정된 후)"""
+    global openai_client
+    if openai_client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is not set")
+        openai_client = AsyncOpenAI(api_key=api_key)
+    return openai_client
+
+
+async def create_conversation(metadata: dict) -> str:
+    """OpenAI Conversations API를 사용하여 conversation 생성"""
+    try:
+        client = get_openai_client()
+        conversation = await client.conversations.create(
+            metadata=metadata
+        )
+        return conversation.id
+    except Exception as e:
+        logger.error(f"❌ Failed to create conversation: {e}")
+        raise
 
 
 # ============================================================================
@@ -131,11 +159,7 @@ async def dkg_setup(request: DKGSetupRequest):
         # Deserialize crypto context
         state.cc = deserialize_crypto_context(request.crypto_context)
 
-        logger.info("━" * 60)
-        logger.info(f"🔐 DKG SETUP | Player #{state.player_index}")
-        logger.info(f"   Game ID: {state.game_id}")
-        logger.info(f"   Players: {state.num_players}")
-        logger.info("━" * 60)
+        logger.info(f"🎮 Game ID: {state.game_id}")
 
         return DKGSetupResponse(
             success=True,
@@ -161,12 +185,10 @@ async def dkg_round(request: DKGRoundRequest):
         if request.round_number == 1 and request.previous_public_key is None:
             # Lead party - generate initial keypair
             state.keypair = dkg_keygen_lead(state.cc)
-            logger.info(f"🔑 DKG Round 1: Lead party key generated")
         else:
             # Joining party - use previous public key
             prev_pk = deserialize_public_key(state.cc, request.previous_public_key)
             state.keypair = dkg_keygen_join(state.cc, prev_pk)
-            logger.info(f"🔑 DKG Round {request.round_number}: Joined with previous public key")
 
         # Serialize our public key for the next party
         pk_b64 = serialize_public_key(state.cc, state.keypair.publicKey)
@@ -208,8 +230,6 @@ async def generate_keyswitchgen(request: dict):
             prev_key
         )
         
-        logger.info(f"✓ Round 2: Generated MultiKeySwitchGen")
-        
         # Serialize and return
         local_key_b64 = serialize_eval_mult_key(state.cc, local_key)
         
@@ -249,8 +269,6 @@ async def generate_multmultkey(request: dict):
             combined_key,
             key_tag
         )
-        
-        logger.info(f"✓ Round 3: Generated MultiMultEvalKey")
         
         # Serialize and return
         mult_key_b64 = serialize_eval_mult_key(state.cc, mult_key)
@@ -406,10 +424,8 @@ async def partial_decrypt(request: PartialDecryptRequest):
         # Perform partial decryption
         if request.is_lead:
             partial = partial_decrypt_lead(state.cc, ciphertext, state.keypair.secretKey)
-            logger.info(f"🔓 Partial decryption (Lead)")
         else:
             partial = partial_decrypt_main(state.cc, ciphertext, state.keypair.secretKey)
-            logger.info(f"🔓 Partial decryption (Main)")
 
         # Serialize partial result
         partial_b64 = serialize_ciphertext(state.cc, partial)
@@ -625,9 +641,6 @@ async def blind_role_assignment(request: dict):
         # Store player addresses for network communication
         if "player_addresses" in request:
             state.player_addresses = request["player_addresses"]
-            logger.info(f"✓ Stored player addresses: {state.player_addresses}")
-        
-        logger.info(f"🔐 Starting blind role decryption for player {my_index}")
         
         # My encrypted role
         my_role_enc = deserialize_ciphertext(state.cc, encrypted_roles[my_index])
@@ -644,7 +657,6 @@ async def blind_role_assignment(request: dict):
         # Temporary: Store encrypted role and wait for server to send final role
         state.my_encrypted_role = encrypted_roles[my_index]
         
-        logger.info(f"✓ Blind role assignment initiated for player {my_index}")
         return {"success": True, "message": "Waiting for threshold decryption"}
         
     except Exception as e:
@@ -692,24 +704,22 @@ async def complete_role_decryption(request: dict):
             state.suspicion_notes = SuspicionNoteManager(state.num_players, state.player_index)
         
         # Initialize AI agent now that we have the role
-        session_id = f"game_{state.game_id}_agent_{state.agent_id}_player_{state.player_index}"
-        db_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db")
-        os.makedirs(db_dir, exist_ok=True)
-        db_path = os.path.join(db_dir, "conversations.db")
-        state.session = SQLiteSession(session_id, db_path)
-        await state.session.clear_session()
+        # Create conversation via OpenAI API
+        conversation_id = await create_conversation(
+            metadata={
+                "game_id": state.game_id,
+                "agent_id": str(state.agent_id),
+                "player_index": str(state.player_index),
+                "role": state.role
+            }
+        )
+        state.session = OpenAIConversationsSession(conversation_id=conversation_id)
+        # NOTE: OpenAIConversationsSession automatically maintains conversation history
+        # No need to clear - each game gets a unique conversation_id
         state.last_read_msg_id = -1
         state.agent = create_mafia_agent(state, state.role, state.player_index, state.num_players, state.game_id or "")
 
-        logger.info("━" * 60)
-        logger.info(f"🎭 ROLE DECRYPTED BLINDLY | Player #{state.player_index}")
-        logger.info(f"   Role: {state.role.upper()}")
-        logger.info(f"   ✓ No one else knows my role!")
-        logger.info(f"   🔐 Encrypted role vector stored for investigation")
-        logger.info(f"   🤖 AI Agent initialized")
-        if hasattr(state, 'personality'):
-            logger.info(f"   🎭 Personality: {state.personality.get('communication', 'unknown')}")
-        logger.info("━" * 60)
+        logger.info(f"🎭 Role: {state.role.upper()}")
         
         return {"success": True, "role": state.role}
         
@@ -741,13 +751,19 @@ async def initialize_agent(request: InitRequest):
         logger.info(f"   Waiting for blind role assignment...")
         logger.info("━" * 60)
 
-        # SQLiteSession으로 게임별, 에이전트별 대화 히스토리 관리
-        session_id = f"game_{state.game_id}_agent_{state.agent_id}_player_{state.player_index}"
-        db_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db")
-        os.makedirs(db_dir, exist_ok=True)
-        db_path = os.path.join(db_dir, "conversations.db")
-        state.session = SQLiteSession(session_id, db_path)
-        await state.session.clear_session()
+        # OpenAIConversationsSession으로 게임별, 에이전트별 대화 히스토리 관리
+        # Create conversation via OpenAI API
+        conversation_id = await create_conversation(
+            metadata={
+                "game_id": state.game_id,
+                "agent_id": str(state.agent_id),
+                "player_index": str(state.player_index),
+                "phase": "init"
+            }
+        )
+        state.session = OpenAIConversationsSession(conversation_id=conversation_id)
+        # NOTE: OpenAIConversationsSession automatically maintains conversation history
+        # No need to clear - each game gets a unique conversation_id
         state.last_read_msg_id = -1
         state.agent = create_mafia_agent(state, state.role, state.player_index, state.num_players, state.game_id or "")
 
@@ -924,10 +940,6 @@ async def receive_chat_message(request: dict):
         message=message,
         turn=state.current_turn
     )
-    
-    # Agent can use this to update their understanding of the game
-    logger.info(f"[Agent] Received chat from player {sender_index}: {message}")
-    logger.info(f"[Agent] Chat history now has {len(state.chat_history.messages)} messages")
     
     return {"status": "ok"}
 
