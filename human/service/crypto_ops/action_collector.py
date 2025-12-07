@@ -24,62 +24,67 @@ class ActionCollector:
         message: str,
         survivors: List[int],
         dead_players: List[int],
-        get_human_action_callback
+        get_human_action_callback,
+        cached_results: dict = None
     ) -> Tuple[List[str], List[str], List[str]]:
         """
         Collect encrypted actions from all players.
         
-        BLIND PROTOCOL: Every player sends 3 vectors regardless of role.
+        BLIND PROTOCOL: Every player sends 3 vectors (vote/attack/heal).
+        Note: Police investigation is handled client-side via parallel threshold decryption.
+        
+        Args:
+            cached_results: Dict of {player_index: response_data} to reuse existing results
         
         Returns:
-            (attack_vectors, heal_vectors, investigate_vectors)
+            (vote_vectors, attack_vectors, heal_vectors)
         """
         # Initialize vectors
+        vote_vectors = [None] * self.num_players
         attack_vectors = [None] * self.num_players
         heal_vectors = [None] * self.num_players
-        investigate_vectors = [None] * self.num_players
         
-        # Collect from AI agents
+        # Collect from AI agents (with cached results if available)
         agent_results = await self.network.collect_agent_actions(
-            players, phase, message, survivors, dead_players
+            players, phase, message, survivors, dead_players, cached_results
         )
         
         for player, result in agent_results:
             if not isinstance(result, Exception):
-                attack_vec, heal_vec, investigate_vec, chat_messages = result
+                vote_vec, attack_vec, heal_vec, chat_messages = result
+                vote_vectors[player.index] = vote_vec
                 attack_vectors[player.index] = attack_vec
                 heal_vectors[player.index] = heal_vec
-                investigate_vectors[player.index] = investigate_vec
             else:
                 print(f"[ActionCollector] {player.name} failed, using zero vectors")
                 zero_str = self.vector_factory.create_zero_vector_str()
+                vote_vectors[player.index] = zero_str
                 attack_vectors[player.index] = zero_str
                 heal_vectors[player.index] = zero_str
-                investigate_vectors[player.index] = zero_str
         
         # Get human action
         human_player = players[human_player_index]
         if human_player.alive and phase in ["night", "vote"]:
-            human_attack, human_heal, human_investigate = await get_human_action_callback(
+            human_vote, human_attack, human_heal = await get_human_action_callback(
                 phase, survivors, human_role
             )
+            vote_vectors[human_player_index] = human_vote
             attack_vectors[human_player_index] = human_attack
             heal_vectors[human_player_index] = human_heal
-            investigate_vectors[human_player_index] = human_investigate
         else:
             zero_str = self.vector_factory.create_zero_vector_str()
+            vote_vectors[human_player_index] = zero_str
             attack_vectors[human_player_index] = zero_str
             heal_vectors[human_player_index] = zero_str
-            investigate_vectors[human_player_index] = zero_str
         
         # Fill missing with zero vectors
         zero_str = self.vector_factory.create_zero_vector_str()
         for i in range(self.num_players):
+            if vote_vectors[i] is None:
+                vote_vectors[i] = zero_str
             if attack_vectors[i] is None:
                 attack_vectors[i] = zero_str
             if heal_vectors[i] is None:
                 heal_vectors[i] = zero_str
-            if investigate_vectors[i] is None:
-                investigate_vectors[i] = zero_str
         
-        return attack_vectors, heal_vectors, investigate_vectors
+        return vote_vectors, attack_vectors, heal_vectors

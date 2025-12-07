@@ -8,6 +8,7 @@ import random
 import hashlib
 from typing import Annotated, Optional, List, Dict
 from agents import Agent, function_tool
+from service.agent.agent_service import _execute_police_investigation
 
 # Configure logger for agent_logic module
 logger = logging.getLogger(__name__)
@@ -382,6 +383,9 @@ def create_agent_tools(state, phase: str = "setup"):
         if state.action_submitted:
             return "You have already submitted a vote for this phase."
         
+        # Show available targets
+        alive_players = [i for i in range(state.num_players) if i in getattr(state, 'survivors', []) and i != state.player_index]
+        
         if 0 <= target_index < state.num_players and target_index != state.player_index:
             state.pending_action_target = target_index
             state.action_submitted = True
@@ -393,19 +397,86 @@ def create_agent_tools(state, phase: str = "setup"):
             logger.info("➖ Vote: Abstained")
             return "Vote abstained"
     
-    # 4. Night Action Tools
+    # 4. Night Action Tools (Role-specific)
+    
     @function_tool
-    async def submit_night_action(
-        target_index: Annotated[int, "Index of player to target (0-indexed). Use -1 to abstain. Doctor CAN target themselves for self-heal."]
+    def mafia_kill(
+        target_index: Annotated[int, "Index of player to kill (0-indexed). Cannot target yourself."]
+    ) -> str:
+        alive_players = [i for i in range(state.num_players) if i in getattr(state, 'survivors', []) and i != state.player_index]
+        player_list = ", ".join(map(str, alive_players)) if alive_players else "None"
+        
+        docstring = f"""
+        MAFIA ONLY: Choose a player to kill tonight.
+        
+        Available targets: {player_list}
+        Cannot target yourself. Choose wisely to eliminate threats.
+        """
+        
+        # Update function docstring dynamically
+        mafia_kill.__doc__ = docstring
+        
+        if not state.alive:
+            return "죽은 플레이어는 행동할 수 없습니다."
+        
+        if state.action_submitted:
+            return "You have already submitted an action for this phase."
+        
+        if 0 <= target_index < state.num_players and target_index != state.player_index:
+            state.pending_action_target = target_index
+            state.action_submitted = True
+            logger.info(f"✅ Mafia kill: Player {target_index}")
+            return f"Mafia kill: Player {target_index}"
+        else:
+            state.pending_action_target = None
+            state.action_submitted = True
+            logger.info("➖ Mafia kill: Invalid target")
+            return "Mafia kill: Invalid target (cannot kill yourself or out of range)"
+    
+    @function_tool
+    def doctor_heal(
+        target_index: Annotated[int, "Index of player to heal (0-indexed). CAN target yourself for self-heal!"]
+    ) -> str:
+        # Build alive players list (including self for doctor)
+        alive_players = [i for i in range(state.num_players) if i in getattr(state, 'survivors', [])]
+        player_list = ", ".join(map(str, alive_players)) if alive_players else "None"
+        
+        docstring = f"""
+        DOCTOR ONLY: Choose a player to save tonight.
+        
+        Available targets (all alive players): {player_list}
+        You CAN target yourself (Player {state.player_index}) to heal yourself! Choose who needs protection.
+        """
+        
+        # Update function docstring dynamically
+        doctor_heal.__doc__ = docstring
+        
+        if not state.alive:
+            return "죽은 플레이어는 행동할 수 없습니다."
+        
+        if state.action_submitted:
+            return "You have already submitted an action for this phase."
+        
+        if 0 <= target_index < state.num_players:
+            state.pending_action_target = target_index
+            state.action_submitted = True
+            target_desc = "yourself" if target_index == state.player_index else f"Player {target_index}"
+            logger.info(f"✅ Doctor heal: {target_desc}")
+            return f"Doctor heal: {target_desc}"
+        else:
+            state.pending_action_target = None
+            state.action_submitted = True
+            logger.info("➖ Doctor heal: Invalid target")
+            return "Doctor heal: Invalid target (out of range)"
+    
+    @function_tool
+    async def police_investigate(
+        target_index: Annotated[int, "Index of player to investigate (0-indexed). Cannot investigate yourself."]
     ) -> str:
         """
-        REQUIRED for night phase if you have a night role (Mafia/Doctor/Police).
-        - Mafia: Choose a player to kill (cannot target self).
-        - Doctor: Choose a player to save (CAN target self to heal yourself!).
-        - Police: Choose a player to investigate - YOU WILL GET IMMEDIATE INVESTIGATION RESULT!
-        
-        IMPORTANT FOR POLICE: This function will immediately investigate and return the result!
-        You will know if the target is MAFIA or NOT MAFIA right away.
+        POLICE ONLY: Investigate a player to find out if they are MAFIA or NOT.
+        YOU WILL GET IMMEDIATE RESULT! Use this information strategically.
+        Cannot investigate yourself.
         """
         if not state.alive:
             return "죽은 플레이어는 행동할 수 없습니다."
@@ -413,144 +484,22 @@ def create_agent_tools(state, phase: str = "setup"):
         if state.action_submitted:
             return "You have already submitted an action for this phase."
         
-        action_type = state.role if state.role in ["mafia", "doctor", "police"] else "NONE"
-        
-        # Police investigation: Execute immediately via relay decrypt
-        if action_type == "police" and 0 <= target_index < state.num_players and target_index != state.player_index:
+        if 0 <= target_index < state.num_players and target_index != state.player_index:
             try:
-                logger.info(f"🔍 Police investigating Player {target_index} via parallel decrypt...")
-                
-                import httpx
-                import asyncio
-                from service.crypto.serialization import serialize_ciphertext, deserialize_ciphertext
-                from service.crypto.vector_operations import homomorphic_dot_product
-                from service.crypto.roles import NUM_ROLE_TYPES
-                from service.crypto.threshold_decryption import partial_decrypt_main, fusion_decrypt
-                
-                # Get target's encrypted role
-                target_role_enc_b64 = state.all_encrypted_roles[target_index]
-                target_role_enc = deserialize_ciphertext(state.cc, target_role_enc_b64)
-                
-                # Compute mafia check: role_vector · [0,1,0,0]
-                mafia_check_vector = [0, 1, 0, 0]
-                investigate_result_enc = homomorphic_dot_product(state.cc, target_role_enc, mafia_check_vector)
-                investigate_result_b64 = serialize_ciphertext(state.cc, investigate_result_enc)
-                
-                # Parallel decrypt: My partial + collect from all others
-                # 🔧 CRITICAL FIX: Agent must use partial_decrypt_main, NOT partial_decrypt_lead
-                my_partial = partial_decrypt_main(state.cc, investigate_result_enc, state.keypair.secretKey)
-                all_partials = [my_partial]
-                
-                # Collect partials from all other players in parallel
-                async def collect_partial(player_idx: int, address: str):
-                    if address is None:
-                        return None
-                    try:
-                        async with httpx.AsyncClient(timeout=10.0) as client:
-                            response = await client.post(
-                                f"{address}/investigate_parallel",
-                                json={"ciphertext": investigate_result_b64}
-                            )
-                            response.raise_for_status()
-                            return response.json()["partial_result"]
-                    except Exception as e:
-                        logger.error(f"Failed to get partial from player {player_idx}: {e}")
-                        return None
-                
-                # Build player addresses
-                player_addresses = []
-                for i in range(state.num_players):
-                    if i == 0:
-                        player_addresses.append("http://localhost:9000")
-                    elif i == state.player_index:
-                        player_addresses.append(None)  # Skip self
-                    else:
-                        # Get from state or estimate
-                        if hasattr(state, 'player_addresses') and state.player_addresses:
-                            player_addresses.append(state.player_addresses[i])
-                        else:
-                            # Fallback: estimate based on port
-                            player_addresses.append(f"http://localhost:{8764 + i}")
-                
-                # Collect all partials in parallel
-                tasks = []
-                for i in range(state.num_players):
-                    if i != state.player_index and player_addresses[i]:
-                        tasks.append(collect_partial(i, player_addresses[i]))
-                
-                if tasks:
-                    partial_results = await asyncio.gather(*tasks)
-                    for partial_b64 in partial_results:
-                        if partial_b64:
-                            partial = deserialize_ciphertext(state.cc, partial_b64)
-                            all_partials.append(partial)
-                
-                # Fusion decrypt
-                final_result = fusion_decrypt(state.cc, all_partials)
-                decrypted_vector = final_result.GetPackedValue()
-                
-                # DEBUG: Log the decrypted vector
-                logger.info(f"🔍 DEBUG - Decrypted vector (first 4): {decrypted_vector[:4]}")
-                logger.info(f"🔍 DEBUG - Sum: {sum(decrypted_vector[:NUM_ROLE_TYPES])}")
-                
-                is_mafia = sum(decrypted_vector[:NUM_ROLE_TYPES]) >= 1
-                
-                # Record the result
-                from suspicion import PoliceNoteManager
-                if isinstance(state.suspicion_notes, PoliceNoteManager):
-                    state.suspicion_notes.add_investigation_result(
-                        target_index=target_index,
-                        is_mafia=is_mafia,
-                        current_turn=state.current_turn
-                    )
-                
-                state.pending_action_target = target_index
-                state.action_submitted = True
-                
-                result_text = "🎭 MAFIA" if is_mafia else "✅ NOT MAFIA (Citizen/Doctor/Police)"
-                logger.info(f"✅ Investigation complete: Player {target_index} is {result_text}")
-                
-                return f"🔍 INVESTIGATION RESULT: Player {target_index} is {result_text}. This has been saved to your suspicion notes. Use this information strategically!"
-                
+                # _execute_police_investigation already records result in suspicion notes
+                result_message = await _execute_police_investigation(state, target_index)
+                return result_message
             except Exception as e:
                 logger.error(f"❌ Investigation failed: {e}")
                 import traceback
                 traceback.print_exc()
-                # Fall through to normal action submission
-        
-        # Non-police or failed investigation: Record target only (시민/마피아/의사는 2-5초 대기)
-        if action_type != "NONE":
-            # Add small delay for non-police to simulate thinking
-            if action_type != "police":
-                import time
-                import random
-                time.sleep(random.uniform(2, 5))
-            
-            # Doctor can target themselves for self-heal
-            can_target_self = (state.role == "doctor")
-            
-            # Check if target is valid
-            is_valid_target = (
-                0 <= target_index < state.num_players and
-                (target_index != state.player_index or can_target_self)
-            )
-            
-            if is_valid_target:
-                state.pending_action_target = target_index
                 state.action_submitted = True
-                target_desc = "yourself" if target_index == state.player_index else f"Player {target_index}"
-                logger.info(f"✅ Night action: {action_type.upper()} targeting {target_desc}")
-                return f"Night action: {action_type.upper()} on {target_desc}"
-            else:
-                state.pending_action_target = None
-                state.action_submitted = True
-                logger.info(f"➖ Night action: {action_type.upper()} abstained (invalid target)")
-                return "Night action: Abstain (invalid target)"
-        else:  # Citizen
+                return f"❌ Investigation failed due to error: {str(e)}"
+        else:
             state.pending_action_target = None
             state.action_submitted = True
-            logger.info("😴 No night action (Citizen role)")
-            return "No night action (Citizen)"
+            logger.info("➖ Police investigation: Invalid target")
+            return "Police investigation: Invalid target (cannot investigate yourself or out of range)"
     
     # 5. Police-only Investigation Recording Tool
     @function_tool
@@ -732,14 +681,19 @@ def create_agent_tools(state, phase: str = "setup"):
     
     # Night phase - focus on action, limited analysis
     elif phase == "night":
+        # Role-specific night action tool (citizen gets no tools)
+        if state.role == "mafia":
+            tools.append(mafia_kill)  # PRIMARY TOOL
+        elif state.role == "doctor":
+            tools.append(doctor_heal)  # PRIMARY TOOL
+        elif state.role == "police":
+            tools.append(police_investigate)  # PRIMARY TOOL
+        # citizen: no night action tool needed
+        
         tools.extend([
-            submit_night_action,  # PRIMARY TOOL - must be called
             view_suspicion_notes,  # Review notes
             get_strategic_overview,  # Quick overview only
         ])
-        # Police gets investigation recording
-        if state.role == "police":
-            tools.append(record_investigation_result)
         return tools
     
     # Vote phase - focus on voting decision
@@ -769,25 +723,25 @@ def get_role_instructions(role: str, player_index: int) -> str:
         "mafia": (
             f"너는 Player {player_index}, 마피아야.\n"
             f"승리 조건: 마피아 수 ≥ 시민 수\n"
-            f"밤에: submit_night_action(target)으로 죽일 사람 선택\n"
+            f"밤에: mafia_kill(target)으로 죽일 사람 선택\n"
             f"핵심: 시민인 척 하면서 살아남아"
         ),
         "doctor": (
             f"너는 Player {player_index}, 의사야.\n"
             f"승리 조건: 마피아 전멸\n"
-            f"밤에: submit_night_action(target)으로 살릴 사람 선택\n"
+            f"밤에: doctor_heal(target)으로 살릴 사람 선택\n"
             f"자기 자신도 살릴 수 있어"
         ),
         "police": (
             f"너는 Player {player_index}, 경찰이야.\n"
             f"승리 조건: 마피아 전멸\n"
-            f"밤에: submit_night_action(target)으로 조사 - 마피아인지 아닌지 바로 알려줌\n"
+            f"밤에: police_investigate(target)으로 조사 - 마피아인지 아닌지 바로 알려줌\n"
             f"조사 결과는 신중하게 공유해"
         ),
         "citizen": (
             f"너는 Player {player_index}, 시민이야.\n"
             f"승리 조건: 마피아 전멸\n"
-            f"밤에: submit_night_action(-1) 호출 (할 거 없음)\n"
+            f"밤에: 아무것도 안 해도 됨 (특수 능력 없음)\n"
             f"토론으로 마피아 찾아내"
         )
     }
@@ -816,7 +770,7 @@ Player {player_index} | 총 {num_players}명
 {personality_prompt}
 
 === 필수 행동 ===
-• 밤(night) 단계: submit_night_action(target) 호출
+• 밤(night) 단계: 역할별 전용 도구 호출 (mafia_kill/doctor_heal/police_investigate/citizen_sleep)
 • 투표(vote) 단계: submit_vote(target) 호출
 • 채팅(chat) 단계: read_chat_messages()로 읽고, send_chat_message()로 대화
 
@@ -846,19 +800,19 @@ Player {player_index} | 총 {num_players}명
 def create_action_prompt(phase: str, turn: int, survivors_str: str, dead_str: str, role: str, message: str) -> str:
     """행동 단계(밤/투표)용 프롬프트 - 더 간결하게"""
 
-    action_tool = "submit_night_action" if phase == "night" else "submit_vote"
-
     # 역할별 간단한 힌트
     if phase == "night":
         if role == "mafia":
+            action_tool = "mafia_kill"
             hint = "누구 죽일지 골라. 뻔한 선택 말고 생각해봐."
         elif role == "doctor":
+            action_tool = "doctor_heal"
             hint = "누구 살릴지 골라. 자기 자신도 가능."
         elif role == "police":
+            action_tool = "police_investigate"
             hint = "누구 조사할지 골라. 결과 바로 알려줌."
-        else:
-            hint = "시민은 밤에 할 거 없어. -1로 패스해."
-    else:
+    else:  # vote phase
+        action_tool = "submit_vote"
         hint = "누가 마피아 같아? 투표해."
 
     return f"""{'밤' if phase == 'night' else '투표'} 단계 (Day {turn})

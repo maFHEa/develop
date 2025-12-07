@@ -41,7 +41,7 @@ def create_one_hot_vector(size: int, target_index: int, cc, public_key):
         Encrypted one-hot vector
     """
     vector = [0] * size
-    if 0 <= target_index < size:
+    if target_index is not None and 0 <= target_index < size:
         vector[target_index] = 1
     plaintext = cc.MakePackedPlaintext(vector)
     return cc.Encrypt(public_key, plaintext)

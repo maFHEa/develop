@@ -351,11 +351,16 @@ class MafiaGameApp(App):
                 player_names = [p.name for p in self.game_engine.players]
 
                 # Start agent voting in background (before showing vote screen)
+                # Store results to avoid duplicate LLM calls
+                agent_vote_results = {}  # {player_index: response_data}
+                
                 async def start_agent_voting():
                     async with httpx.AsyncClient(timeout=120.0) as client:
                         tasks = []
+                        agents = []
                         for player in self.game_engine.players:
                             if not player.is_human and player.alive:
+                                agents.append(player)
                                 tasks.append(
                                     client.post(
                                         f"{player.address}/request_action",
@@ -368,7 +373,10 @@ class MafiaGameApp(App):
                                     )
                                 )
                         if tasks:
-                            await asyncio.gather(*tasks, return_exceptions=True)
+                            results = await asyncio.gather(*tasks, return_exceptions=True)
+                            for agent, result in zip(agents, results):
+                                if not isinstance(result, Exception):
+                                    agent_vote_results[agent.index] = result.json()
 
                 # Start agents voting in background immediately
                 agent_vote_task = asyncio.create_task(start_agent_voting())
@@ -403,8 +411,8 @@ class MafiaGameApp(App):
                 # Wait for agent voting to complete
                 await agent_vote_task
 
-                # Execute vote phase in background
-                await self.game_engine.execute_vote_phase()
+                # Execute vote phase with cached results (avoid duplicate LLM calls)
+                await self.game_engine.execute_vote_phase(cached_results=agent_vote_results)
                 self.pop_screen()
 
                 # ========== Vote Result Screen ==========

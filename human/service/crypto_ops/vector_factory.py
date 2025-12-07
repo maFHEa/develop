@@ -44,12 +44,13 @@ class VectorFactory:
         phase: str
     ) -> Tuple[str, str, str]:
         """
-        Create 3 encrypted vectors for human player action.
+        Create 3 encrypted vectors for human player action (vote, attack, heal).
         
         BLIND PROTOCOL: Only role-appropriate vector contains real data.
+        Note: Police investigation is handled separately via parallel threshold decryption.
         
         Returns:
-            (attack_vector, heal_vector, investigate_vector)
+            (vote_vector, attack_vector, heal_vector)
         """
         # Determine action type
         action_type = self._get_action_type(role, phase)
@@ -57,49 +58,29 @@ class VectorFactory:
         # Generate real vector
         if target == -1 or action_type is None:
             real_str = self.create_zero_vector_str()
-        elif action_type == "investigate":
-            # Police: Compute investigation result (role · mafia_check)
-            import sys
-            import os
-            agent_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'agent')
-            if os.path.abspath(agent_path) not in sys.path:
-                sys.path.append(os.path.abspath(agent_path))
-            from service.crypto.serialization import deserialize_ciphertext
-            from service.crypto.vector_operations import homomorphic_dot_product
-            
-            # Get target's encrypted role vector
-            target_role_enc_b64 = self.all_encrypted_roles[target]
-            target_role_enc = deserialize_ciphertext(self.cc, target_role_enc_b64)
-            
-            # Mafia check vector
-            mafia_check_vector = [0, 1, 0, 0]
-            
-            # Compute dot product
-            result_enc = homomorphic_dot_product(
-                self.cc,
-                target_role_enc,
-                mafia_check_vector
-            )
-            
-            # Serialize
-            from service.crypto.serialization import serialize_ciphertext
-            real_str = serialize_ciphertext(self.cc, result_enc)
         else:
             real_str = self.create_one_hot_vector_str(target)
         
-        # Create dummy vectors
-        dummy1_str = self.create_zero_vector_str()
-        dummy2_str = self.create_zero_vector_str()
+        # Create dummy vector
+        dummy_str = self.create_zero_vector_str()
         
-        # Assign based on role
-        if action_type == "attack":
-            return real_str, dummy1_str, dummy2_str
-        elif action_type == "heal":
-            return dummy1_str, real_str, dummy2_str
-        elif action_type == "investigate":
-            return dummy1_str, dummy2_str, real_str
+        # Assign based on role and phase
+        if phase == "vote":
+            # Vote phase: use vote vector slot
+            return real_str, dummy_str, dummy_str
+        elif phase == "night":
+            if action_type == "attack":
+                # Mafia: use attack slot
+                return dummy_str, real_str, dummy_str
+            elif action_type == "heal":
+                # Doctor: use heal slot
+                return dummy_str, dummy_str, real_str
+            else:
+                # Police/Citizen: all zeros (police uses separate investigation)
+                return dummy_str, dummy_str, dummy_str
         else:
-            return dummy1_str, dummy2_str, dummy1_str  # All dummies
+            # Unknown phase
+            return dummy_str, dummy_str, dummy_str
     
     def _get_action_type(self, role: str, phase: str) -> str:
         """Determine action type based on role and phase"""

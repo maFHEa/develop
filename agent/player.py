@@ -22,6 +22,14 @@ from agents import Agent, Runner, ToolCallItem, ToolCallOutputItem, MessageOutpu
 from model.chat import GameChatHistory, ChatMessage
 from suspicion import SuspicionNoteManager, PoliceNoteManager
 from agent_logic import create_mafia_agent, create_action_prompt
+from action_handlers import (
+    handle_vote_phase,
+    handle_night_phase,
+    handle_chat_phase,
+    generate_night_work_vectors,
+    send_dummy_investigation_packets,
+    log_phase_start
+)
 
 from model import (
     InitRequest,
@@ -104,60 +112,6 @@ class AgentState:
 
 state = AgentState()
 app = FastAPI(title="Mafia AI Agent")
-
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-
-async def send_dummy_investigation_packets():
-    """
-    경찰이 아닌 플레이어가 네트워크 obfuscation을 위해 dummy packet 전송
-    2-5초 랜덤 딜레이 후 다른 플레이어들에게 investigate_parallel 요청
-    """
-    import random
-    
-    # 2-5초 랜덤 딜레이
-    delay = random.uniform(2.0, 5.0)
-    await asyncio.sleep(delay)
-    
-    logger.info(f"🕵️ Sending dummy investigation packets (role: {state.role})")
-    
-    # Dummy 0 벡터 생성
-    dummy_ciphertext = serialize_ciphertext(
-        state.cc, 
-        create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-    )
-    
-    # 다른 플레이어들에게 dummy packet 전송
-    tasks = []
-    for i in range(state.num_players):
-        if i != state.player_index:
-            # 주소 추정 (Human=9000, Agent 1=port+1000, etc)
-            if i == 0:
-                port = 9000  # Human player
-            else:
-                port = 8764 + i  # Agents start from different ports
-            
-            player_address = f"http://localhost:{port}"
-            tasks.append(_send_single_dummy_packet(player_address, dummy_ciphertext))
-    
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    
-    logger.info(f"🕵️ Dummy packets sent to {len(tasks)} players")
-
-
-async def _send_single_dummy_packet(address: str, ciphertext_b64: str):
-    """Helper to send single dummy investigate packet"""
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(
-                f"{address}/investigate_parallel",
-                json={"ciphertext": ciphertext_b64}
-            )
-    except Exception:
-        pass  # Ignore errors silently
 
 
 # ============================================================================
@@ -811,316 +765,73 @@ async def initialize_agent(request: InitRequest):
 
 @app.post("/request_action", response_model=ActionResponse)
 async def request_action(request: GameUpdateRequest):
-    """Host requests an action from this agent."""
+    """
+    Host가 Agent에게 액션 요청
+    Phase별로 적절한 핸들러를 호출하여 암호화된 액션 벡터 반환
+    """
     try:
         logger.info("-"*50)
 
-        # Note: No caching for votes - agent may change mind based on new chat info
+        # Reset state for new action
         state.action_submitted = False
         state.pending_action_target = None
         state.pending_chat_messages = []
         state.current_phase = request.phase
 
-        # Log phase start with RANDOMIZED survivor order to prevent bias
-        import random
-        shuffled_survivors = list(request.survivors)
-        random.shuffle(shuffled_survivors)
-        survivors_str = ", ".join(str(s) for s in shuffled_survivors)
-        dead_str = ", ".join(str(d) for d in request.dead_players)
-        logger.info("")
-        logger.info("━" * 60)
-        logger.info(f"📍 {request.phase.upper()} PHASE | Turn {state.current_turn}")
-        logger.info(f"👥 Alive (randomized order): {survivors_str}")
-        logger.info(f"💀 Dead: {dead_str}")
-        logger.info(f"💬 Message: {request.message}")
-        logger.info("━" * 60)
-
-        # Update dead players in suspicion notes
+        # Update suspicion notes with dead players
         if state.suspicion_notes:
             for i in range(state.num_players):
                 if i not in request.survivors and i != state.player_index:
                     state.suspicion_notes.mark_player_dead(i)
 
+        # Dead player: send zero action
         if not state.alive:
-            logger.info("💀 Agent is dead. Sending dummy action.")
+            logger.info("💀 Agent is dead. Sending zero action.")
             encrypted_vector = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
             ct_b64 = serialize_ciphertext(state.cc, encrypted_vector)
-            return ActionResponse(encrypted_action=ct_b64, phase=request.phase)
-
-        # CITIZEN OPTIMIZATION: Skip AI call during night phase
-        if request.phase == "night" and state.role == "citizen":
-            import random
-            
-            # Random delay (2-5 seconds) to avoid timing analysis
-            delay = random.uniform(2.0, 5.0)
-            logger.info(f"😴 Citizen has no night action - waiting {delay:.1f}s for timing...")
-            await asyncio.sleep(delay)
-            logger.info("✓ Citizen dummy vectors ready")
-            
-            # Skip to vector generation (handled at the end)
-            state.pending_action_target = None
-            state.action_submitted = True
-            
-        elif request.phase in ["night", "vote"]:
-            if request.phase == "night":
-                state.current_turn += 1
-
-            # Update agent tools for current phase
-            from agent_logic import create_agent_tools
-            state.agent.tools = create_agent_tools(state, phase=request.phase)
-
-            prompt = create_action_prompt(
-                phase=request.phase,
-                turn=state.current_turn,
-                survivors_str=survivors_str,
-                dead_str=dead_str,
-                role=state.role,
-                message=request.message
-            )
-
-            logger.debug(f"AI Prompt:\n{prompt}")
-
-            logger.info("🤖 Calling AI agent...")
-            result = await Runner.run(
-                starting_agent=state.agent,
-                input=prompt,
-                session=state.session,
-                max_turns=20
-            )
-
-            # Log AI interaction
-            logger.info("")
-            logger.info("┌─ AI Decision ─────────────────────────────────────────────┐")
-
-            for item in result.new_items:
-                if isinstance(item, ToolCallItem):
-                    func_name = getattr(item.raw_item, 'name', 'unknown')
-                    func_args = getattr(item.raw_item, 'arguments', '{}')
-                    try:
-                        args_dict = json.loads(func_args)
-                        logger.info(f"│ 🔧 Function: {func_name}")
-                        logger.info(f"│    Args: {args_dict}")
-                    except:
-                        logger.info(f"│ 🔧 Function: {func_name}({func_args})")
-
-                elif isinstance(item, ToolCallOutputItem):
-                    logger.info(f"│ ✅ Result: {item.output}")
-
-                elif isinstance(item, MessageOutputItem):
-                    message_text = ItemHelpers.text_message_output(item)
-                    if message_text.strip():
-                        logger.info(f"│ 💭 Thought: {message_text[:100]}...")
-
-            logger.info("└───────────────────────────────────────────────────────────┘")
-            logger.debug(f"Full AI output: {result.final_output}")
-
-            # If AI didn't submit action, give one more chance with urgent reminder
-            if not state.action_submitted:
-                logger.warning("⚠️  AI did not submit an action, sending urgent reminder...")
-                
-                action_tool = "submit_night_action" if request.phase == "night" else "submit_vote"
-                reminder_prompt = f"""🚨 URGENT: You MUST submit your action NOW!
-
-You have analyzed the situation but haven't acted yet.
-ALIVE players: [{survivors_str}]
-
-⚡ IMMEDIATELY call {action_tool}(target_index) right now!
-- Choose ANY alive player index from the list above
-- If unsure, pick a random number from alive players
-- This is REQUIRED to continue the game!
-
-Do it NOW - no more analysis needed!"""
-                
-                try:
-                    retry_result = await Runner.run(
-                        starting_agent=state.agent,
-                        input=reminder_prompt,
-                        session=state.session,
-                        max_turns=3
-                    )
-                    
-                    if not state.action_submitted:
-                        logger.error("❌ AI still did not submit action after reminder, forcing abstain")
-                        state.pending_action_target = None
-                    else:
-                        logger.info("✅ AI submitted action after reminder")
-                except Exception as e:
-                    logger.error(f"Retry failed: {e}")
-                    state.pending_action_target = None
-                    
-        elif request.phase in ["chat", "day"]:
-            # Chat/Day phase - run in background and return immediately
-            # This allows the host to poll /chat/messages while agent generates responses
-            from agent_logic import create_agent_tools, create_chat_prompt
-            import time as time_module
-
-            state.agent.tools = create_agent_tools(state, phase="chat")
-
-            remaining_time = request.remaining_time if request.remaining_time else 120
-
-            # Reset last_message_time so first message has no delay
-            state.last_message_time = None
-
-            # Run chat in background task
-            async def run_chat_phase():
-                start_time = time_module.time()
-                chat_round = 0
-
-                # Keep chatting until time runs out
-                while state.current_phase in ["chat", "day"]:
-                    chat_round += 1
-                    elapsed = time_module.time() - start_time
-                    time_left = max(0, remaining_time - elapsed)
-
-                    # Stop if less than 5 seconds left
-                    if time_left < 5:
-                        logger.info(f"⏱️  Chat time ended - {elapsed:.1f}s elapsed")
-                        break
-
-                    prompt = create_chat_prompt(
-                        turn=state.current_turn,
-                        survivors_str=survivors_str,
-                        dead_str=dead_str,
-                        role=state.role,
-                        message=request.message,
-                        remaining_time=int(time_left)
-                    )
-
-                    logger.info(f"💬 Chat round {chat_round} - {time_left:.0f}s remaining")
-
-                    try:
-                        # Shorter max_turns per round so we can loop
-                        result = await Runner.run(
-                            starting_agent=state.agent,
-                            input=prompt,
-                            session=state.session,
-                            max_turns=10  # Shorter rounds, but multiple iterations
-                        )
-
-                        msgs_sent = len(state.pending_chat_messages)
-                        logger.info(f"💬 Round {chat_round} complete - {msgs_sent} total messages sent")
-
-                        # Small delay between rounds to avoid spam
-                        await asyncio.sleep(2)
-
-                    except Exception as e:
-                        logger.error(f"Chat round {chat_round} error: {e}")
-                        await asyncio.sleep(2)
-
-                logger.info(f"💬 Chat phase ended - {chat_round} rounds, {len(state.pending_chat_messages)} messages sent")
-
-            # Start chat in background and return immediately
-            asyncio.create_task(run_chat_phase())
-            logger.info("💬 Chat phase started in background - returning immediately")
-
-            # Return empty response for chat phase (no action vectors needed)
             return ActionResponse(
-                encrypted_action=None,
-                phase=request.phase,
-                chat_messages=[]
+                vote_vector=ct_b64,
+                attack_vector=ct_b64,
+                heal_vector=ct_b64,
+                phase=request.phase
             )
-            
-        else:
-            logger.info("ℹ️  No action required for this phase.")
-            state.pending_action_target = None
 
-        # BLIND PROTOCOL: Create ALL three action vectors
-        # Only the one matching our role contains real data, others are random dummies
-        logger.info("🎭 BLIND PROTOCOL: Generating 3 encrypted vectors (attack/heal/investigate)")
-
-        attack_vec = None
-        heal_vec = None
-        investigate_vec = None
-
-        # 투표 단계: attack_vector 슬롯에 투표 벡터 저장
+        # ========================================
+        # Phase별 핸들러 호출
+        # ========================================
+        
         if request.phase == "vote":
-            if state.pending_action_target is not None and state.pending_action_target >= 0:
-                # 유효한 투표 대상이 있는 경우 one-hot 벡터 생성
-                attack_vec = create_one_hot_vector(
-                    state.num_players,
-                    state.pending_action_target,
-                    state.cc,
-                    state.joint_public_key
-                )
-                logger.info(f"🗳️ Vote: Player {state.pending_action_target}")
-            else:
-                # 기권
-                attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-                logger.info("🗳️ Vote: Abstained")
-            # 투표 단계에서는 heal, investigate는 사용하지 않음
-            heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-            investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-
-        elif state.pending_action_target is not None and request.phase == "night":
-            real_vector = create_one_hot_vector(
-                state.num_players,
-                state.pending_action_target,
-                state.cc,
-                state.joint_public_key
+            vote_b64, attack_b64, heal_b64 = await handle_vote_phase(state, request)
+        
+        elif request.phase == "night":
+            target_index = await handle_night_phase(state, request)
+            # 여기서 None 또는 False 를 받는 경우 아무 것도 안함으로 간주
+            state.pending_action_target = target_index
+            
+            # Generate night work vectors
+            vote_b64, attack_b64, heal_b64 = generate_night_work_vectors(
+                state, request.phase, target_index
             )
-
-            # Assign real vector to matching role, dummies to others
-            if state.role == "mafia":
-                attack_vec = real_vector
-                heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-                investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-                logger.info(f"🔪 Attack: REAL → Player {state.pending_action_target} | Heal: DUMMY | Investigate: DUMMY")
-            elif state.role == "doctor":
-                attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-                heal_vec = real_vector
-                investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-                logger.info(f"💊 Attack: DUMMY | Heal: REAL → Player {state.pending_action_target} | Investigate: DUMMY")
-            elif state.role == "police":
-                attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-                heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-
-                # Police: Compute investigation result
-                # Get target's encrypted role vector
-                target_role_enc_b64 = state.all_encrypted_roles[state.pending_action_target]
-                target_role_enc = deserialize_ciphertext(state.cc, target_role_enc_b64)
-
-                # Mafia check vector: [citizen=0, mafia=1, doctor=0, police=0]
-                from service.crypto.roles import NUM_ROLE_TYPES
-                from service.crypto.vector_operations import homomorphic_dot_product
-                mafia_check_vector = [0, 1, 0, 0]
-
-                # Compute dot product: role_vector · mafia_check
-                # Result will be 1 if mafia, 0 otherwise
-                investigate_vec = homomorphic_dot_product(
-                    state.cc,
-                    target_role_enc,
-                    mafia_check_vector
-                )
-
-                logger.info(f"🔍 Attack: DUMMY | Heal: DUMMY | Investigate: COMPUTED (Player {state.pending_action_target} role check)")
-            else:  # citizen
-                attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-                heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-                investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-                logger.info("👤 Citizen: All DUMMY vectors")
+        
+        elif request.phase in ["chat", "day"]:
+            # Chat phase는 백그라운드에서 실행하고 즉시 반환
+            vote_b64, attack_b64, heal_b64 = await handle_chat_phase(state, request)
+        
         else:
-            # No action or not night/vote phase - all dummies
-            attack_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-            heal_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-            investigate_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-            logger.info("⏸️  No action: All DUMMY vectors")
-
-        attack_b64 = serialize_ciphertext(state.cc, attack_vec)
-        heal_b64 = serialize_ciphertext(state.cc, heal_vec)
-        investigate_b64 = serialize_ciphertext(state.cc, investigate_vec)
-
-
-        # Network obfuscation: 경찰이 아닌 경우도 dummy investigation packets 전송
-        if request.phase == "night" and state.role != "police":
-            asyncio.create_task(send_dummy_investigation_packets())
+            # Unknown phase - return zero vectors
+            logger.info(f"ℹ️  Unknown phase '{request.phase}', returning zero vectors")
+            zero_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+            zero_vec_b64 = serialize_ciphertext(state.cc, zero_vec)
+            vote_b64 = attack_b64 = heal_b64 = zero_vec_b64
 
         return ActionResponse(
+            vote_vector=vote_b64,
             attack_vector=attack_b64,
             heal_vector=heal_b64,
-            investigate_vector=investigate_b64,
             phase=request.phase,
             chat_messages=[]
         )
+    
     except Exception as e:
         logger.error(f"Error in /request_action: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

@@ -53,8 +53,8 @@ class GamePhases:
         survivors = get_survivors_func()
         dead = get_dead_func()
 
-        print("[Engine] Collecting encrypted actions (3 vectors per player)...")
-        attack_vectors, heal_vectors, investigate_vectors = await self.crypto_ops.collect_encrypted_actions(
+        print("[Engine] Collecting encrypted actions (vote/attack/heal vectors)...")
+        vote_vectors, attack_vectors, heal_vectors = await self.crypto_ops.collect_encrypted_actions(
             players, human_player_index, human_role, "night", message, survivors, dead, get_human_action_callback
         )
 
@@ -63,9 +63,6 @@ class GamePhases:
         
         print("[Engine] Deserializing heal vectors...")
         heals_enc = [deserialize_ciphertext(self.crypto_ops.cc, enc) for enc in heal_vectors]
-        
-        print("[Engine] Deserializing investigate vectors...")
-        investigations_enc = [deserialize_ciphertext(self.crypto_ops.cc, enc) for enc in investigate_vectors]
         
         # Debug: Decrypt individual vectors to verify one-hot property
         # DEBUG: Optionally decrypt individual vectors for logging (VERY EXPENSIVE)
@@ -112,34 +109,9 @@ class GamePhases:
                 players[i].alive = False
                 self.last_killed.append(i)
 
-        await self._handle_police_investigation(investigations_enc, players, human_player_index, human_role)
+        # Police investigation is now handled client-side via parallel threshold decryption
+        # No server-side processing needed
         self._announce_night_results(players, log_callback)
-
-    async def _handle_police_investigation(self, investigations_enc, players, human_player_index, human_role):
-        """
-        Police investigation using parallel decryption (ONLY POLICE SEES RESULT).
-        
-        Protocol (Network Obfuscation):
-        1. ALL players send investigation packets automatically:
-           - Police: role_vector[target] · mafia_check → encrypted result
-           - Others: Enc(0) with random delay (agent 코드에서 자동 실행)
-        2. Server aggregates all encrypted results
-        3. Police agent already performed parallel decrypt client-side
-        
-        Security:
-        - Network traffic looks identical for all players
-        - Only police sees final result (already decrypted on their side)
-        - Server doesn't know who the police is or what the result is
-        """
-        print("[Engine] Police investigation: Server aggregating encrypted packets (blind protocol)...")
-        
-        # Just aggregate - police already did parallel decrypt on their side
-        # This is just to maintain the blind protocol
-        total_result_enc = aggregate_encrypted_vectors(self.crypto_ops.cc, investigations_enc)
-        
-        # Note: We don't decrypt here. Police already did it client-side.
-        print("[Engine] Investigation complete (police already has result)")
-
 
     def _announce_night_results(self, players, log_callback):
         """Announce night phase results"""
@@ -168,7 +140,8 @@ class GamePhases:
         get_dead_func,
         get_human_action_callback,
         broadcast_callback,
-        log_callback
+        log_callback,
+        cached_results: dict = None
     ):
         """Execute voting phase"""
         print(f"\n{'='*60}")
@@ -182,14 +155,14 @@ class GamePhases:
 
         await broadcast_callback("vote", message)
 
-        print("[Engine] Collecting encrypted votes (3 vectors per player)...")
-        attack_vectors, heal_vectors, investigate_vectors = await self.crypto_ops.collect_encrypted_actions(
-            players, human_player_index, human_role, "vote", message, survivors, dead, get_human_action_callback
+        print("[Engine] Collecting encrypted votes (vote/attack/heal vectors)...")
+        vote_vectors, attack_vectors, heal_vectors = await self.crypto_ops.collect_encrypted_actions(
+            players, human_player_index, human_role, "vote", message, survivors, dead, get_human_action_callback, cached_results
         )
 
-        # For voting, we use attack_vector slot
-        vote_vectors = [deserialize_ciphertext(self.crypto_ops.cc, enc) for enc in attack_vectors]
-        total_votes_enc = aggregate_encrypted_vectors(self.crypto_ops.cc, vote_vectors)
+        # Use vote_vectors for voting
+        vote_cts = [deserialize_ciphertext(self.crypto_ops.cc, enc) for enc in vote_vectors]
+        total_votes_enc = aggregate_encrypted_vectors(self.crypto_ops.cc, vote_cts)
 
         print("[Engine] Threshold decrypting vote results...")
         vote_counts = await self.crypto_ops.threshold_decrypt_vector(total_votes_enc, players)

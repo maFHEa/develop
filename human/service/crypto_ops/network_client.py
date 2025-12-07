@@ -37,9 +37,9 @@ class AgentNetworkClient:
                 response.raise_for_status()
                 data = response.json()
                 return (
+                    data["vote_vector"],
                     data["attack_vector"],
                     data["heal_vector"],
-                    data["investigate_vector"],
                     data.get("chat_messages", [])
                 )
         except Exception as e:
@@ -52,21 +52,35 @@ class AgentNetworkClient:
         phase: str,
         message: str,
         survivors: List[int],
-        dead_players: List[int]
+        dead_players: List[int],
+        cached_results: dict = None
     ) -> List[Tuple]:
         """Collect actions from all AI agents in parallel"""
-        tasks = []
         ai_players = [p for p in players if not p.is_human]
+        results = []
         
         for player in ai_players:
-            tasks.append(
-                self.request_agent_action(
-                    player, phase, message, survivors, dead_players
+            # Use cached result if available (to avoid duplicate LLM calls)
+            if cached_results and player.index in cached_results:
+                data = cached_results[player.index]
+                result = (
+                    data["vote_vector"],
+                    data["attack_vector"],
+                    data["heal_vector"],
+                    data.get("chat_messages", [])
                 )
-            )
+                results.append((player, result))
+            else:
+                # Make new request if not cached
+                try:
+                    result = await self.request_agent_action(
+                        player, phase, message, survivors, dead_players
+                    )
+                    results.append((player, result))
+                except Exception as e:
+                    results.append((player, e))
         
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        return list(zip(ai_players, results))
+        return results
     
     async def request_partial_decryption(
         self,

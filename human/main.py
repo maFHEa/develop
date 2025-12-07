@@ -260,7 +260,7 @@ class GameEngine:
         self.phase = "day"
         await self.game_phases.execute_day_phase(self.broadcast_update)
 
-    async def execute_vote_phase(self):
+    async def execute_vote_phase(self, cached_results: dict = None):
         """Execute vote phase using GamePhases manager"""
         self.phase = "vote"
         await self.game_phases.execute_vote_phase(
@@ -271,7 +271,8 @@ class GameEngine:
             self.get_dead_players,
             self.get_human_action,
             self.broadcast_update,
-            self.log_message
+            self.log_message,
+            cached_results
         )
 
     async def get_human_action(self, phase: str, survivors: List[int], role: str) -> tuple:

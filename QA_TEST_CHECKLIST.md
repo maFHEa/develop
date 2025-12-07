@@ -159,12 +159,12 @@
 
 #### 5.1 초기화 & 역할 할당
 - [ ] DKG 참여 성공
-- [ ] 역할 "CITIZEN" 수신 확인
-- [ ] AI Agent 초기화 (personality 할당)
+- [o] 역할 "CITIZEN" 수신 확인
+- [o] AI Agent 초기화 (personality 할당)
 
 #### 5.2 Night Phase - 자동 행동
 - [ ] AI가 `submit_night_action(-1)` 호출 (행동 없음)
-- [ ] Zero vector 제출
+- [o] Zero vector 제출
 - [ ] 타임아웃 없이 완료
 
 #### 5.3 Day Phase - 채팅 및 추론
@@ -192,7 +192,7 @@
 
 #### 6.2 Night Phase - 치료 대상 선택
 - [ ] AI가 `submit_night_action(target_index)` 호출
-- [ ] 유효한 타겟 선택 (자신 제외, 생존자만)
+- [ ] 유효한 타겟 선택
 - [ ] One-hot vector 생성 및 암호화
 - [ ] 제출 완료
 
@@ -200,6 +200,7 @@
 - [ ] AI가 의심받는 플레이어 보호
 - [ ] 랜덤 선택이 아닌 전략적 선택 (AI 판단)
 - [ ] 매 턴 다른 플레이어 선택 가능
+- [o] 자기 자신 선택 가능
 
 #### 6.4 치료 성공 확인
 - [ ] Mafia의 공격과 일치하는 경우 생존 확인
@@ -210,7 +211,7 @@
 ### 7. MAFIA (마피아)
 
 #### 7.1 초기화
-- [ ] 역할 "MAFIA" 수신
+- [o] 역할 "MAFIA" 수신
 - [ ] AI에게 Mafia 역할 지시사항 전달
 
 #### 7.2 Night Phase - 공격 대상 선택
@@ -252,15 +253,15 @@
   - [ ] 다른 Agent들 포함
 - [ ] 모든 partial 수집
 - [ ] Fusion decrypt 수행
-- [ ] 결과 해석: `sum >= 1` → Mafia, `sum < 1` → 비 Mafia
+- [o] 결과 해석: `sum >= 1` → Mafia, `sum < 1` → 비 Mafia
 
 #### 8.3 조사 결과 정확성 검증 (핵심!)
-- [ ] **Mafia 조사 시**: `[0, 1, 0, 0]` 복호화 → "MAFIA" 판정
-- [ ] **비 Mafia 조사 시**: `[0, 0, 0, 0]` 복호화 → "NOT MAFIA" 판정
-- [ ] **절대 쓰레기 값이 나오면 안 됨!**
+- [o] **Mafia 조사 시**: `[0, 1, 0, 0]` 복호화 → "MAFIA" 판정
+- [o] **비 Mafia 조사 시**: `[0, 0, 0, 0]` 복호화 → "NOT MAFIA" 판정
+- [o] **절대 쓰레기 값이 나오면 안 됨!**
   - ❌ `[-7627, 17797, -29831, -8432]` 같은 값
   - ❌ Sum이 음수 또는 이상한 값
-- [ ] 디버그 로그 확인:
+- [o] 디버그 로그 확인:
   ```
   🔍 DEBUG - Decrypted vector (first 4): [0, 1, 0, 0]
   🔍 DEBUG - Sum: 1
