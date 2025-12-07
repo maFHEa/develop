@@ -199,8 +199,15 @@ class GamePhases:
 
         # Log decrypted vote results to file
         max_votes = max(vote_counts)
-        voted_out = vote_counts.index(max_votes) if max_votes > 0 else None
-        
+
+        # 동률 체크: 최대 득표자가 2명 이상이면 아무도 처형 안 함
+        max_vote_players = [i for i, count in enumerate(vote_counts) if count == max_votes]
+        is_tie = len(max_vote_players) > 1
+
+        voted_out = None
+        if max_votes > 0 and not is_tie:
+            voted_out = vote_counts.index(max_votes)
+
         if self.logger:
             self.logger.log_vote_results(
                 self.day_number,
@@ -209,21 +216,25 @@ class GamePhases:
                 self.crypto_ops.num_players
             )
 
-        if max_votes > 0:
+        print(f"\n{'='*60}")
+        print("VOTE RESULTS")
+        print(f"{'='*60}")
+        for i, count in enumerate(vote_counts):
+            if count > 0:
+                print(f"Player {i} ({players[i].name}): {count} votes")
+
+        if max_votes > 0 and not is_tie:
             eliminated = vote_counts.index(max_votes)
             players[eliminated].alive = False
             self.last_voted_out = eliminated
 
-            print(f"\n{'='*60}")
-            print("VOTE RESULTS")
-            print(f"{'='*60}")
-            for i, count in enumerate(vote_counts):
-                if count > 0:
-                    print(f"Player {i} ({players[i].name}): {count} votes")
-
             message = f"{players[eliminated].name} was voted out!"
             print(f"\n💀 {message}")
             log_callback(message)
+        elif is_tie:
+            print(f"\n⚖️ 동률! 아무도 처형되지 않습니다.")
+            self.last_voted_out = None
+            log_callback("Tie vote - no one was eliminated.")
         else:
             print("\n✓ No one was eliminated (no votes cast).")
             self.last_voted_out = None
