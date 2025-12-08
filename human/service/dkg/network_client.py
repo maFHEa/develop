@@ -109,6 +109,38 @@ class DKGNetworkClient:
                 partials.append(response.json()["partial_ciphertext"])
         return partials
     
+    async def initiate_distributed_shuffle(
+        self,
+        encrypted_roles: List[str],
+        joint_public_key_b64: str
+    ) -> List[str]:
+        """분산 셔플 프로토콜: Host가 각 Agent에게 순차적으로 요청하여 shuffle+rerandomize 수행"""
+        if not self.ai_addresses:
+            return encrypted_roles
+        
+        current_roles = encrypted_roles
+        
+        # Sequentially call each agent to shuffle and re-randomize
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for i, agent_address in enumerate(self.ai_addresses):
+                print(f"[Shuffle {i+1}/{len(self.ai_addresses)}] Sending to {agent_address}...")
+                
+                response = await client.post(
+                    f"{agent_address}/shuffle_encrypted_roles",
+                    json={
+                        "encrypted_roles": current_roles,
+                        "joint_public_key": joint_public_key_b64
+                    }
+                )
+                response.raise_for_status()
+                
+                # Get shuffled+rerandomized roles back
+                result = response.json()
+                current_roles = result["encrypted_roles"]
+                print(f"✓ Received shuffled+rerandomized roles from agent {i+1}")
+        
+        return current_roles
+    
     async def distribute_encrypted_roles(
         self, 
         encrypted_roles: List[str],

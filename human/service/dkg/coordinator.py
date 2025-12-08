@@ -109,7 +109,7 @@ class DKGCoordinator:
     ) -> tuple[str, str]:
         """Blind role 할당 - returns (role, encrypted_role_vector)"""
         print("="*50)
-        print(" Role Assignment (Blind Threshold Decryption)")
+        print(" Role Assignment (Distributed Shuffle + Blind Decryption)")
         print("="*50)
         
         # Build player addresses if not provided
@@ -125,6 +125,22 @@ class DKGCoordinator:
             num_players
         )
         print(f"\n✓ Encrypted {len(encrypted_roles)} roles")
+        
+        # Distributed Shuffle: Agent들이 순차적으로 섞고 re-randomize함
+        print("\n[Distributed Shuffle] Agents will shuffle and re-randomize encrypted roles...")
+        
+        # Serialize joint public key to send to agents
+        from service.crypto.serialization import serialize_public_key
+        joint_pk_b64 = serialize_public_key(self.protocol.cc, self.protocol.joint_public_key)
+        
+        # Host sequentially calls each agent to shuffle+rerandomize
+        encrypted_roles = await self.network.initiate_distributed_shuffle(
+            encrypted_roles,
+            joint_pk_b64
+        )
+        
+        print("✓ All agents completed shuffle+rerandomization (Host cannot know original order)")
+            # Fallback to original if shuffle fails
         
         # Human role 복호화
         print("\n[You] Decrypting your role...")

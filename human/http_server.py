@@ -22,15 +22,17 @@ class ServerState:
         self.cc = None
         self.keypair = None
         self.role = None
+        self.dkg_coordinator = None
 
 state = ServerState()
 
 
-def initialize_server(cc, keypair, role):
+def initialize_server(cc, keypair, role, dkg_coordinator=None):
     """Initialize server with crypto context and keys"""
     state.cc = cc
     state.keypair = keypair
     state.role = role
+    state.dkg_coordinator = dkg_coordinator
 
 
 @app.post("/relay_decrypt")

@@ -60,7 +60,7 @@ class GameEngine:
         from http_server import app, initialize_server
         
         # Initialize server state
-        initialize_server(cc, keypair, role)
+        initialize_server(cc, keypair, role, self.dkg_coordinator)
         
         def run_server():
             uvicorn.run(app, host="0.0.0.0", port=self.http_port, log_level="warning")
