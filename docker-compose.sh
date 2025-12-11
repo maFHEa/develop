@@ -1,6 +1,3 @@
 #!/bin/bash
-set -e
 
-export OPENAI_API_KEY="Your-OpenAI-API-Key-Here"
-
-sudo -E docker compose run --rm mafhea
+sudo -E docker compose run --rm  -e OPENAI_API_KEY="Your-OpenAI-API-Key-Here" mafhea

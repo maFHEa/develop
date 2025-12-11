@@ -215,6 +215,7 @@ class GameEngine:
         self.chat_history.add_message(sender_index, current_phase, message, current_turn)
 
         async with httpx.AsyncClient(timeout=NETWORK_CONFIG["connection_timeout"]) as client:
+            tasks = []
             for player in self.players:
                 if not player.is_human and player.alive:
                     tasks.append(
