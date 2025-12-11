@@ -283,22 +283,6 @@ async def generate_multmultkey(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/generate_mult_key_round2")
-async def generate_mult_key_round2(request: dict):
-    """
-    Legacy endpoint - redirects to generate_keyswitchgen.
-    """
-    return await generate_keyswitchgen(request)
-
-
-@app.post("/generate_mult_key_round3")
-async def generate_multmultkey_legacy(request: dict):
-    """
-    Legacy endpoint - redirects to generate_multmultkey.
-    """
-    return await generate_multmultkey(request)
-
-
 @app.post("/install_final_mult_key")
 async def install_final_mult_key(request: dict):
     """
@@ -322,110 +306,6 @@ async def install_final_mult_key(request: dict):
         return {"success": True}
     except Exception as e:
         logger.error(f"❌ Install final mult key error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/generate_mult_key")
-async def generate_mult_key(request: dict):
-    """
-    Legacy endpoint - kept for compatibility.
-    Generate evaluation multiplication key in local context.
-    """
-    try:
-        if state.cc is None or state.keypair is None:
-            raise ValueError("Keys not initialized. Complete DKG first.")
-        
-        game_id = request.get("game_id")
-        if game_id != state.game_id:
-            raise ValueError(f"Game ID mismatch: expected {state.game_id}, got {game_id}")
-        
-        # Generate evaluation multiplication key for local context
-        state.cc.EvalMultKeyGen(state.keypair.secretKey)
-        logger.info(f"✓ Evaluation multiplication key generated and inserted")
-        
-        return {
-            "success": True
-        }
-    except Exception as e:
-        logger.error(f"❌ Mult key generation error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/get_eval_mult_key")
-async def get_eval_mult_key(request: dict):
-    """
-    Serialize and return the locally generated evaluation multiplication key.
-    """
-    try:
-        if state.cc is None or state.keypair is None:
-            raise ValueError("Keys not initialized. Complete DKG first.")
-
-        # Generate key if not already present
-        if not state.cc.GetEvalMultKeyVector(state.keypair.publicKey.GetKeyTag()):
-             state.cc.EvalMultKeyGen(state.keypair.secretKey)
-             logger.info("🔑 Generated EvalMultKey on demand.")
-
-        # Serialize the key using a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".key") as f:
-            key_path = f.name
-        
-        state.cc.SerializeEvalMultKey(key_path, state.keypair.publicKey, BINARY)
-        
-        with open(key_path, "rb") as f:
-            key_data = f.read()
-        
-        os.remove(key_path)
-
-        key_b64 = base64.b64encode(key_data).decode('utf-8')
-        logger.info(f"✓ Serialized and returning local EvalMultKey")
-
-        return {"success": True, "eval_mult_key": key_b64}
-
-    except Exception as e:
-        logger.error(f"❌ Get EvalMultKey error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/receive_mult_keys")
-async def receive_mult_keys(request: dict):
-    """
-    Receive and insert all evaluation multiplication keys from all participants.
-    """
-    try:
-        if state.cc is None:
-            raise ValueError("CryptoContext not initialized. Complete DKG setup first.")
-        
-        game_id = request.get("game_id")
-        if game_id != state.game_id:
-            raise ValueError(f"Game ID mismatch: expected {state.game_id}, got {game_id}")
-        
-        mult_keys = request.get("mult_keys", [])
-        
-        from service.crypto.serialization import deserialize_eval_mult_key
-        
-        # Insert all multiplication keys into context
-        inserted_count = 0
-        skipped_count = 0
-        for i, key_b64 in enumerate(mult_keys):
-            try:
-                deserialize_eval_mult_key(state.cc, key_b64)
-                inserted_count += 1
-            except RuntimeError as e:
-                # Skip if key already exists
-                if "Can not save a EvalMultKeys vector" in str(e):
-                    skipped_count += 1
-                    continue
-                else:
-                    raise
-        
-        logger.info(f"✓ Inserted {inserted_count} new multiplication keys, skipped {skipped_count} existing keys")
-        
-        return {
-            "success": True,
-            "keys_received": inserted_count
-        }
-    except Exception as e:
-        logger.error(f"❌ Mult keys reception error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -457,27 +337,6 @@ async def partial_decrypt(request: PartialDecryptRequest):
         )
     except Exception as e:
         logger.error(f"❌ Partial decrypt error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/investigate_parallel")
-async def investigate_parallel(request: dict):
-    """병렬 조사: 암호문을 받아서 partial decrypt만 수행"""
-    try:
-        if state.cc is None or state.keypair is None:
-            raise ValueError("Keys not initialized")
-        
-        ciphertext_b64 = request["ciphertext"]
-        ciphertext = deserialize_ciphertext(state.cc, ciphertext_b64)
-        
-        # Partial decrypt
-        partial = partial_decrypt_main(state.cc, ciphertext, state.keypair.secretKey)
-        partial_b64 = serialize_ciphertext(state.cc, partial)
-        
-        return {"partial_result": partial_b64}
-        
-    except Exception as e:
-        logger.error(f"❌ Parallel investigation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
