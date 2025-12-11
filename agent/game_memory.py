@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class GameMemorySession:
     """게임 이벤트를 SQLite에 기록하는 세션"""
     
-    def __init__(self, session_id: str, db_path: str = "game_memory.db"):
+    def __init__(self, session_id: str, db_path: str = "db/game_memory.db"):
         """
         Args:
             session_id: "gameid_agentid" 형식의 고유 세션 ID

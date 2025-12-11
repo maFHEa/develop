@@ -60,8 +60,6 @@ from service.crypto.serialization import (
     deserialize_crypto_context,
     serialize_public_key,
     deserialize_public_key,
-    serialize_ciphertext,
-    deserialize_ciphertext
 )
 
 from service.crypto.threshold_decryption import (
@@ -407,27 +405,6 @@ async def get_investigation_result():
         "result": state.last_investigation_result
     }
 
-
-@app.post("/role_assignment")
-async def role_assignment(request: RoleAssignmentRequest):
-    """
-    Receive role assignment after threshold decryption.
-    """
-    try:
-        state.role = request.role.lower()
-        state.joint_public_key = deserialize_public_key(state.cc, request.joint_public_key)
-
-        logger.info("━" * 60)
-        logger.info(f"🎭 ROLE ASSIGNED | Player #{state.player_index}")
-        logger.info(f"   Role: {state.role.upper()}")
-        logger.info("━" * 60)
-
-        return {"success": True, "message": f"Role {state.role} assigned"}
-    except Exception as e:
-        logger.error(f"❌ Role assignment error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/shuffle_encrypted_roles")
 async def shuffle_encrypted_roles(request: dict):
     """
@@ -555,7 +532,7 @@ async def complete_role_decryption(request: dict):
         # Session was already created in /init, so just record role assignment
         if state.game_memory is None:
             session_id = f"{state.game_id}_{state.player_index}"
-            state.game_memory = GameMemorySession(session_id, db_path="game_memory.db")
+            state.game_memory = GameMemorySession(session_id, db_path="db/game_memory.db")
             state.game_memory.clear_session()  # Clear old data for new game
         
         # Record role assignment event
@@ -617,7 +594,7 @@ async def initialize_agent(request: InitRequest):
         # Initialize SQLite game memory session early (before role assignment)
         # Session ID: gameid_agentid
         session_id = f"{state.game_id}_{state.agent_id}"
-        state.game_memory = GameMemorySession(session_id, db_path="game_memory.db")
+        state.game_memory = GameMemorySession(session_id, db_path="db/game_memory.db")
         state.game_memory.clear_session()  # Clear old data for new game
         
         state.game_memory.record_event(
@@ -730,22 +707,6 @@ async def request_action(request: GameUpdateRequest):
     except Exception as e:
         logger.error(f"Error in /request_action: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/investigation_result")
-async def get_investigation_result():
-    """경찰이 자신의 조사 결과를 조회 (tool에서 사용)"""
-    if state.role != "police":
-        raise HTTPException(status_code=403, detail="Only police can check investigation results")
-    
-    if state.last_investigation_result is None:
-        return {"has_result": False}
-    
-    return {
-        "has_result": True,
-        "result": state.last_investigation_result
-    }
-
 
 @app.get("/health")
 async def health_check():
