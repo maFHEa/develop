@@ -22,9 +22,10 @@ async def _execute_police_investigation(state, target_index: int) -> str:
     target_role_enc_b64 = state.all_encrypted_roles[target_index]
     target_role_enc = deserialize_ciphertext(state.cc, target_role_enc_b64)
     
-    # Compute mafia check: role_vector · [0,1,0,0]
-    mafia_check_vector = [0, 1, 0, 0]
-    investigate_result_enc = homomorphic_dot_product(state.cc, target_role_enc, mafia_check_vector)
+    # Compute mafia check: role_vector · Enc([0,1,0,0])
+    mafia_plain = [0, 1, 0, 0]
+    mafia_check_enc = state.cc.Encrypt(state.joint_public_key, state.cc.MakePackedPlaintext(mafia_plain))
+    investigate_result_enc = homomorphic_dot_product(state.cc, target_role_enc, mafia_check_enc)
     investigate_result_b64 = serialize_ciphertext(state.cc, investigate_result_enc)
     
     # Parallel decrypt: My partial + collect from all others

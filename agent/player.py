@@ -630,6 +630,51 @@ async def role_assignment(request: RoleAssignmentRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/shuffle_encrypted_roles")
+async def shuffle_encrypted_roles(request: dict):
+    """
+    Distributed shuffle protocol: Receive encrypted roles from host, shuffle AND re-randomize, return to host.
+    Host will call each agent sequentially.
+    """
+    try:
+        encrypted_roles = request["encrypted_roles"]
+        joint_public_key_b64 = request["joint_public_key"]
+        
+        # Deserialize joint public key
+        joint_pk = deserialize_public_key(state.cc, joint_public_key_b64)
+        
+        # Shuffle the encrypted roles list
+        import random
+        shuffled_roles = encrypted_roles.copy()
+        random.shuffle(shuffled_roles)
+        
+        # Re-randomize each ciphertext: ct' = ct + Enc(0)
+        from service.crypto.roles import NUM_ROLE_TYPES
+        rerandomized_roles = []
+        for role_ct_b64 in shuffled_roles:
+            # Deserialize ciphertext
+            role_ct = deserialize_ciphertext(state.cc, role_ct_b64)
+            
+            # Create zero vector and encrypt it
+            zero_pt = state.cc.MakePackedPlaintext([0] * NUM_ROLE_TYPES)
+            enc_zero = state.cc.Encrypt(joint_pk, zero_pt)
+            
+            # Add Enc(0) to re-randomize
+            rerandomized_ct = state.cc.EvalAdd(role_ct, enc_zero)
+            
+            # Serialize back
+            rerandomized_roles.append(serialize_ciphertext(state.cc, rerandomized_ct))
+        
+        logger.info(f"🔀 Player {state.player_index} shuffled and re-randomized {len(rerandomized_roles)} encrypted roles")
+        
+        # Return shuffled+rerandomized roles back to host
+        return {"encrypted_roles": rerandomized_roles}
+        
+    except Exception as e:
+        logger.error(f"❌ Shuffle error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/blind_role_assignment")
 async def blind_role_assignment(request: dict):
     """

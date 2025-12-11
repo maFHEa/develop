@@ -137,25 +137,21 @@ def compute_killed_vector(cc, attack_vector, heal_vector, size: int, public_key)
     return killed
 
 
-def homomorphic_dot_product(cc, encrypted_vector, plaintext_vector: List[int]):
+def homomorphic_dot_product(cc, encrypted_vector, encrypted_mafia_vector):
     """
-    Compute dot product between encrypted vector and plaintext vector.
+    Compute dot product between two encrypted vectors (암호문과 암호문 곱).
     
     Used for police investigation: role_vector · mafia_check_vector
     
     Args:
         cc: CryptoContext
         encrypted_vector: Encrypted vector (e.g., role vector)
-        plaintext_vector: Plaintext vector (e.g., [0, 1, 0, 0] for mafia check)
+        encrypted_mafia_vector: Encrypted mafia check vector
     
     Returns:
         Encrypted scalar result (dot product)
     """
-    # Multiply encrypted vector with plaintext vector element-wise
-    plaintext = cc.MakePackedPlaintext(plaintext_vector)
-    result = cc.EvalMult(encrypted_vector, plaintext)
-    
-    # Sum all elements to get dot product
-    # Since we can't easily sum encrypted vector elements, we use a rotation trick
-    # For now, return the element-wise product (caller will sum after decryption)
+    # 암호문끼리 곱
+    result = cc.EvalMult(encrypted_vector, encrypted_mafia_vector)
+    # 결과는 element-wise product, 실제 dot은 복호화 후 합산
     return result
