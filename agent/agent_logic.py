@@ -13,7 +13,6 @@ from service.agent.agent_service import _execute_police_investigation
 # Configure logger for agent_logic module
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-# Don't add custom handler - use uvicorn's logging format
 
 
 # ============================================================================

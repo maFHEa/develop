@@ -420,27 +420,3 @@ class GameEngine:
             requester_index,
             self.players
         )
-
-
-# ============================================================================
-# Main Entry Point
-# ============================================================================
-
-async def main():
-    """Simple CLI game for testing"""
-    engine = GameEngine()
-    
-    # Example setup
-    ai_addresses = [
-        "http://localhost:8001",
-        "http://localhost:8002",
-        "http://localhost:8003",
-        "http://localhost:8004"
-    ]
-    
-    await engine.setup_game(len(ai_addresses), ai_addresses, "test_game_123")
-    await engine.run_game_loop()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

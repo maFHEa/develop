@@ -195,8 +195,6 @@ async def dkg_round(request: DKGRoundRequest):
 
         # Serialize our public key for the next party
         pk_b64 = serialize_public_key(state.cc, state.keypair.publicKey)
-        
-        # Note: Multiplication key will be generated later using MultiEvalMultKeyGen
 
         return DKGRoundResponse(
             public_key=pk_b64,
@@ -357,14 +355,12 @@ async def generate_mult_key(request: dict):
 async def get_eval_mult_key(request: dict):
     """
     Serialize and return the locally generated evaluation multiplication key.
-    This is a new endpoint required for the server to collect key pieces.
     """
     try:
         if state.cc is None or state.keypair is None:
             raise ValueError("Keys not initialized. Complete DKG first.")
 
-        # Ensure the key is generated
-        # Note: OpenFHE internally manages the key, we just need to ensure it's been generated
+        # Generate key if not already present
         if not state.cc.GetEvalMultKeyVector(state.keypair.publicKey.GetKeyTag()):
              state.cc.EvalMultKeyGen(state.keypair.secretKey)
              logger.info("🔑 Generated EvalMultKey on demand.")
@@ -394,7 +390,6 @@ async def get_eval_mult_key(request: dict):
 async def receive_mult_keys(request: dict):
     """
     Receive and insert all evaluation multiplication keys from all participants.
-    This enables threshold homomorphic multiplication operations.
     """
     try:
         if state.cc is None:
@@ -409,7 +404,6 @@ async def receive_mult_keys(request: dict):
         from service.crypto.serialization import deserialize_eval_mult_key
         
         # Insert all multiplication keys into context
-        # Skip keys that are already inserted (our own key)
         inserted_count = 0
         skipped_count = 0
         for i, key_b64 in enumerate(mult_keys):
@@ -417,7 +411,7 @@ async def receive_mult_keys(request: dict):
                 deserialize_eval_mult_key(state.cc, key_b64)
                 inserted_count += 1
             except RuntimeError as e:
-                # Key already exists - this is expected for our own key
+                # Skip if key already exists
                 if "Can not save a EvalMultKeys vector" in str(e):
                     skipped_count += 1
                     continue
@@ -439,9 +433,7 @@ async def receive_mult_keys(request: dict):
 async def partial_decrypt(request: PartialDecryptRequest):
     """
     Perform partial decryption with local secret key.
-
-    This is the key security feature: Each party contributes a partial
-    decryption, but no single party can decrypt alone.
+    Each party contributes a partial decryption.
     """
     try:
         if state.cc is None or state.keypair is None:
@@ -729,16 +721,7 @@ async def blind_role_assignment(request: dict):
         # My encrypted role
         my_role_enc = deserialize_ciphertext(state.cc, encrypted_roles[my_index])
         
-        # Collect partial decryptions from ALL other players
-        # (In a real implementation, this would involve network requests)
-        # For now, we simulate that the server coordinates this
-        # The key point: THIS agent only gets the final decrypted role
-        
-        # For now, we'll use a simplified approach where the server
-        # already collected partials and we just do our own
-        # TODO: Implement full distributed protocol
-        
-        # Temporary: Store encrypted role and wait for server to send final role
+        # Store encrypted role and wait for server to coordinate threshold decryption
         state.my_encrypted_role = encrypted_roles[my_index]
         
         return {"success": True, "message": "Waiting for threshold decryption"}

@@ -100,17 +100,14 @@ async def call_ai_with_retry(state, prompt: str, max_turns: int = 20) -> bool:
     action_tool = "submit_night_action" if state.current_phase == "night" else "submit_vote"
     survivors_list = [i for i in range(state.num_players) if i in state.chat_history.messages or i == state.player_index]
     
-    reminder_prompt = f"""🚨 URGENT: You MUST submit your action NOW!
+    reminder_prompt = f"""🚨 URGENT: Submit your action NOW!
 
-You have analyzed the situation but haven't acted yet.
 ALIVE players: {survivors_list}
 
-⚡ IMMEDIATELY call {action_tool}(target_index) right now!
-- Choose ANY alive player index from the list above
-- If unsure, pick a random number from alive players
-- This is REQUIRED to continue the game!
+Call {action_tool}(target_index) immediately.
+Choose any alive player from the list above.
 
-Do it NOW - no more analysis needed!"""
+No more analysis - act now!"""
     
     try:
         # Retry with lock handling
@@ -351,9 +348,7 @@ def generate_night_work_vectors(state, phase: str, target_index: Optional[int]) 
     """
     BLIND PROTOCOL: 3개의 암호화된 벡터 생성 (vote/attack/heal)
     자신의 역할에 해당하는 벡터만 실제 데이터, 나머지는 더미
-    
-    Note: Police investigation은 client-side에서 parallel decrypt로 처리하므로
-          서버에는 investigate vector를 보내지 않음 (네트워크 obfuscation만 수행)
+    경찰 조사는 client-side parallel decrypt로 처리
     
     Returns: (vote_b64, attack_b64, heal_b64)
     """
