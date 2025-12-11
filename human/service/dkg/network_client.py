@@ -190,6 +190,23 @@ class DKGNetworkClient:
                 json={"partial_ciphertexts": partials}
             )
     
+    async def distribute_final_mult_key(self, final_mult_key_b64: str):
+        """Send final multiplication key to all agents"""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            tasks = [
+                client.post(
+                    f"{address}/install_final_mult_key",
+                    json={"final_mult_key": final_mult_key_b64}
+                )
+                for address in self.ai_addresses
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    print(f"⚠️ Agent {i+1} failed to install final mult key: {result}")
+                else:
+                    print(f"✓ Agent {i+1} installed final mult key")
+    
     async def _send_setup(
         self, 
         client, 

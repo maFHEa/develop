@@ -301,6 +301,32 @@ async def generate_multmultkey_legacy(request: dict):
     return await generate_multmultkey(request)
 
 
+@app.post("/install_final_mult_key")
+async def install_final_mult_key(request: dict):
+    """
+    Install the final combined multiplication key into the context.
+    This should be called after all mult keys are generated and combined by the host.
+    """
+    try:
+        if state.cc is None or state.keypair is None:
+            raise ValueError("Keys not initialized. Complete DKG first.")
+        
+        from service.crypto.serialization import deserialize_eval_mult_key_object
+        
+        # Deserialize final mult key
+        final_mult_key_b64 = request.get("final_mult_key")
+        final_mult_key = deserialize_eval_mult_key_object(state.cc, final_mult_key_b64)
+        
+        # Install into context
+        state.cc.InsertEvalMultKey([final_mult_key])
+        logger.info(f"✓ Final multiplication key installed into context")
+        
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"❌ Install final mult key error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/generate_mult_key")
 async def generate_mult_key(request: dict):
     """

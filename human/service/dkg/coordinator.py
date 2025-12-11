@@ -93,6 +93,15 @@ class DKGCoordinator:
         
         self.protocol.finalize_mult_keys([human_mult] + agent_mults)
         print(" ✓ Threshold multiplication key installed!")
+        
+        # Send final mult key to all agents
+        final_mult_key = self.protocol.cc.GetEvalMultKeyVector(
+            self.protocol.joint_public_key.GetKeyTag()
+        )[0]
+        final_mult_key_b64 = serialize_eval_mult_key(self.protocol.cc, final_mult_key)
+        
+        await self.network.distribute_final_mult_key(final_mult_key_b64)
+        print(" ✓ Final multiplication key distributed to all agents!")
         print("="*50)
         
         return (
