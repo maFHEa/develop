@@ -405,18 +405,3 @@ class GameEngine:
         if self.dkg_coordinator:
             return await self.dkg_coordinator.decrypt_all_roles_for_game_end()
         return []
-    
-    async def relay_decrypt_for_player(
-        self,
-        ciphertext_b64: str,
-        requester_index: int
-    ) -> List[int]:
-        """
-        Relay decryption: requester sends encrypted data, others decrypt sequentially.
-        Used for police investigation where only the police should see the result.
-        """
-        return await self.crypto_ops.decryption_service.relay_decrypt(
-            ciphertext_b64,
-            requester_index,
-            self.players
-        )

@@ -204,5 +204,3 @@ class CryptoOperations:
         
         result_text = "🎭 MAFIA" if is_mafia else "✅ NOT MAFIA"
         print(f"[Human] ✅ Investigation complete: Player {target_index} is {result_text}")
-        print(f"[Human] DEBUG - Decrypted vector (first 4): {decrypted_vector[:4]}")
-        print(f"[Human] DEBUG - Sum: {sum(decrypted_vector[:NUM_ROLE_TYPES])}")

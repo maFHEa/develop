@@ -1,5 +1,0 @@
-httpx==0.27.2
-pydantic==2.10.3
-numpy>=1.26.0
-textual==0.47.1
-openfhe

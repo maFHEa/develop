@@ -64,18 +64,6 @@ class GamePhases:
         print("[Engine] Deserializing heal vectors...")
         heals_enc = [deserialize_ciphertext(self.crypto_ops.cc, enc) for enc in heal_vectors]
         
-        # Debug: Decrypt individual vectors to verify one-hot property
-        # DEBUG: Optionally decrypt individual vectors for logging (VERY EXPENSIVE)
-        # Commented out to improve performance - threshold decrypt is slow
-        # if self.logger:
-        #     self.logger.log("\nDEBUG: Individual player vectors (before aggregation)")
-        #     for i, attack_ct in enumerate(attacks_enc):
-        #         attack_plain = await self.crypto_ops.threshold_decrypt_vector(attack_ct, players)
-        #         self.logger.log(f"  Player {i} attack: {attack_plain}")
-        #     for i, heal_ct in enumerate(heals_enc):
-        #         heal_plain = await self.crypto_ops.threshold_decrypt_vector(heal_ct, players)
-        #         self.logger.log(f"  Player {i} heal: {heal_plain}")
-
         print("[Engine] Aggregating all attack vectors (blind protocol)...")
         total_attacks = aggregate_encrypted_vectors(self.crypto_ops.cc, attacks_enc)
         

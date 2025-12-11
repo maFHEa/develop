@@ -130,33 +130,6 @@ class AgentNetworkClient:
         except Exception as e:
             print(f"[Network] Error in parallel investigation from {player.name}: {e}")
             raise
-
-    async def request_relay_decrypt(
-        self,
-        player,
-        ciphertext_b64: str,
-        remaining_order: List[int],
-        player_addresses: List[str]
-    ) -> dict:
-        """릴레이 복호화 요청"""
-        try:
-            async with httpx.AsyncClient(
-                timeout=NETWORK_CONFIG["connection_timeout"] * 2
-            ) as client:
-                response = await client.post(
-                    f"{player.address}/relay_decrypt",
-                    json={
-                        "ciphertext": ciphertext_b64,
-                        "partial_results": [],  # Start with empty list
-                        "remaining_order": remaining_order,
-                        "player_addresses": player_addresses
-                    }
-                )
-                response.raise_for_status()
-                return response.json()
-        except Exception as e:
-            print(f"[Network] Error in relay decrypt from {player.name}: {e}")
-            raise
     
     async def collect_partial_decryptions(
         self,
