@@ -1,349 +1,56 @@
-# maFHEa: Mafia Game with Threshold FHE
-
-OpenFHE 기반 **Threshold Fully Homomorphic Encryption**을 사용한 안전한 마피아 게임 구현
-
-## 개요
-
-이 프로젝트는 마피아 게임의 역할 배분을 **분산 키 생성(DKG)**과 **Threshold 복호화**를 통해 안전하게 수행합니다. 어떤 단일 참가자도 다른 플레이어의 역할을 알 수 없으며, 모든 플레이어가 협력해야만 역할이 공개됩니다.
-
-## 핵심 보안 특성
-
-| 특성 | 설명 |
-|------|------|
-| **분산 키 생성 (DKG)** | 공개키는 공유, 비밀키는 각 플레이어가 일부만 보유 |
-| **n-of-n Threshold** | 모든 플레이어가 참여해야 복호화 가능 |
-| **NOISE_FLOODING** | 부분 복호화 시 정보 누출 방지 |
-| **개별 역할 복호화** | 각 플레이어는 자신의 역할만 알 수 있음 |
-| **Uniform Action Protocol** | 모든 플레이어가 동일 크기 패킷 전송 (트래픽 분석 방지) |
-
-## 시스템 아키텍처
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Game Flow                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   Human Host (Lead)          AI Agents                          │
-│   ┌──────────────┐     ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-│   │   main.py    │     │ Agent 1  │ │ Agent 2  │ │ Agent 3  │  │
-│   │              │     │ player.py│ │ player.py│ │ player.py│  │
-│   └──────┬───────┘     └────┬─────┘ └────┬─────┘ └────┬─────┘  │
-│          │                  │            │            │         │
-│          │    1. DKG Protocol (Sequential Key Chain)            │
-│          ├─────────────────▶├───────────▶├───────────▶│         │
-│          │                  │            │            │         │
-│          │    2. Encrypted Role Assignment                      │
-│          │    Enc(roles, pk_joint)                              │
-│          │                  │            │            │         │
-│          │    3. Threshold Decryption (All parties)             │
-│          ├─────────────────▶├───────────▶├───────────▶│         │
-│          │◀─────────────────┤◀───────────┤◀───────────┤         │
-│          │                  │            │            │         │
-│          │    4. Fusion → Individual Roles                      │
-│          │                                                      │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## DKG (Distributed Key Generation) 프로토콜
-
-### 1단계: CryptoContext 생성 및 배포
-
-```
-Human Host가 OpenFHE CryptoContext 생성
-  ↓
-모든 Agent에게 CryptoContext 전송 (/dkg_setup)
-```
-
-### 2단계: 순차적 키 체인 생성 
-
-```
-Round 0: Human (Lead)
-    kp0 = cc.KeyGen()
-    pk_chain = kp0.publicKey
-    sk0 저장 (로컬)
-
-Round 1: Agent 1
-    kp1 = cc.MultipartyKeyGen(pk_chain)
-    pk_chain = kp1.publicKey
-    sk1 저장 (로컬)
-
-Round 2: Agent 2
-    kp2 = cc.MultipartyKeyGen(pk_chain)
-    pk_chain = kp2.publicKey
-    sk2 저장 (로컬)
-
-Round 3: Agent 3
-    kp3 = cc.MultipartyKeyGen(pk_chain)
-    pk_chain = kp3.publicKey
-    sk3 저장 (로컬)
-
-Round 4: Agent 4
-    kp4 = cc.MultipartyKeyGen(pk_chain)
-    pk_joint = kp4.publicKey  ← 최종 공동 공개키
-    sk4 저장 (로컬)
-```
-
-**보안 포인트**: 각 참가자는 자신의 비밀키(sk_i)만 알고, 완전한 비밀키는 누구도 알 수 없습니다.
-
-### 3단계: 역할 암호화
-
-```python
-# Host가 역할 셔플 후 암호화
-roles = ["citizen", "mafia", "doctor", "police"]
-random.shuffle(roles)
-
-for player_idx, role in enumerate(roles):
-    role_vector = [0, 0, 0, 0]  # [citizen, mafia, doctor, police]
-    role_vector[ROLE_ENCODING[role]] = 1
-
-    encrypted_role = cc.Encrypt(pk_joint, role_vector)
-```
-
-### 4단계: Threshold 복호화 
-
-```
-각 플레이어의 암호화된 역할에 대해:
-
-    Human (Lead): partial_0 = cc.MultipartyDecryptLead(ciphertext, sk0)
-        ↓
-    Agent 1:      partial_1 = cc.MultipartyDecryptMain(ciphertext, sk1)
-        ↓
-    Agent 2:      partial_2 = cc.MultipartyDecryptMain(ciphertext, sk2)
-        ↓
-    Agent 3:      partial_3 = cc.MultipartyDecryptMain(ciphertext, sk3)
-        ↓
-    Agent 4:      partial_4 = cc.MultipartyDecryptMain(ciphertext, sk4)
-        ↓
-    Fusion:       plaintext = cc.MultipartyDecryptFusion([partial_0..4])
-        ↓
-    역할 확정:     role = decode(plaintext)  # [0,1,0,0,0] → "mafia"
-```
-
-## 디렉토리 구조
-
-```
-maFHEa/
-├── mafia_launcher.py     # 게임 런처 (로비 서버 + 게임 시작)
-├── README.md
-│
-├── human/                # Human Host (게임 진행자)
-│   ├── main.py          # 메인 게임 로직, DKG 조율
-│   ├── config.py        # 게임/네트워크/암호화 설정
-│   ├── requirements.txt
-│   └── start_game.sh
-│
-└── agent/                # AI Agent (플레이어)
-    ├── lobby.py         # Agent 생성 서버
-    ├── player.py        # Agent 플레이어 로직
-    ├── security.py      # OpenFHE 암호화 모듈
-    ├── models.py        # Pydantic 모델
-    └── venv/            # Python 가상환경
-```
-
-## 설치 및 실행
-
-### 요구사항
-
-- Python 3.10+
-- Ubuntu 22.04/24.04 (OpenFHE 지원)
-- OpenAI API Key
-
-### 설치
-
-```bash
-# Human 환경
-cd human
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
-
-# Agent 환경
-cd ../agent
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
-```
-
-### 실행
-
-```bash
-# .env 파일에 API 키 설정
-echo "OPENAI_API_KEY=your-key-here" > human/.env
-
-# 게임 실행
-python3 mafia_launcher.py
-```
-
-## 암호화 파라미터
-
-```python
-CRYPTO_CONFIG = {
-    "scheme": "BFVrns",              # BFV with RNS
-    "plaintext_modulus": 65537,      # 충분히 큰 소수
-    "multiplicative_depth": 2,        # 곱셈 깊이
-    "multiparty_mode": "NOISE_FLOODING_MULTIPARTY"  # 가장 안전한 모드
-}
-```
-
-### NOISE_FLOODING_MULTIPARTY
-
-부분 복호화 시 노이즈를 추가하여 비밀키 정보 누출을 방지합니다. 이는 악의적인 참가자가 부분 복호화 결과를 분석해도 다른 참가자의 비밀키를 추론할 수 없게 합니다.
-
-## API 엔드포인트
-
-### Agent (player.py)
-
-| 엔드포인트 | 메서드 | 설명 |
-|-----------|--------|------|
-| `/health` | GET | 헬스 체크 |
-| `/init` | POST | 게임 초기화 |
-| `/dkg_setup` | POST | CryptoContext 수신 |
-| `/dkg_round` | POST | DKG 라운드 참여 (키 생성) |
-| `/partial_decrypt` | POST | 부분 복호화 수행 |
-| `/role_assignment` | POST | 역할 수신 |
-| `/request_action` | POST | 행동 요청 (투표, 능력 사용) |
-
-### Lobby (lobby.py)
-
-| 엔드포인트 | 메서드 | 설명 |
-|-----------|--------|------|
-| `/health` | GET | 헬스 체크 |
-| `/spawn_agent` | POST | 새 Agent 생성 |
-| `/agent/{id}` | DELETE | Agent 종료 |
-
-## 게임 내 암호화 연산
-
-### Night Phase 계산
-
-```python
-# 모든 연산은 암호화된 상태로 수행
-Enc(Net_Attack) = Sum(Enc(Mafia_Action_i))
-Enc(Net_Heal) = Sum(Enc(Doctor_Action_i))
-Enc(Is_Killed) = Enc(Net_Attack) * (1 - Enc(Net_Heal))
-
-# 최종 결과만 복호화
-Killed = Decrypt(Enc(Is_Killed))
-```
-
-### 경찰 조사
-
-```python
-# 암호화 상태로 내적 연산
-Enc(Target_Query) = [0, 0, 1, 0, 0]  # 원-핫 벡터
-Enc(Role_Vector) = [0, 1, 0, 1, 0]    # 1=마피아, 0=기타
-
-Enc(Result) = Enc(Target_Query) ⊙ Enc(Role_Vector)
-Is_Mafia = Decrypt(Enc(Result))
-```
-
-### 트래픽 분석 방어
-
-```python
-# 모든 플레이어가 매 턴 데이터 전송
-if can_act:
-    send(Encrypt([0, 0, 1, 0]))  # 실제 행동
-else:
-    send(Encrypt([0, 0, 0, 0]))  # 더미 패킷
-
-# 네트워크 관찰자는 역할 구분 불가
-```
-
-## 보안 분석
-
-### 안전한 부분
-
-| 기능 | 보안 메커니즘 |
-|------|--------------|
-| 역할 배분 | Threshold 복호화 (n-of-n) |
-| 투표 | 개별 투표 암호화, 합산 결과만 복호화 |
-| 마피아 공격 | 암호화된 타겟, 합산 결과만 공개 |
-| 의사 치료 | 암호화된 선택, 결과만 공개 |
-| 경찰 조사 | 암호화된 조사, 개인 결과만 복호화 |
-
-### Threat Model
-
-| 공격자 유형 | 보호 수준 |
-|------------|-----------|
-| Honest-but-Curious Host | 개별 행동 알 수 없음 |
-| Network Observer | 트래픽 패턴으로 역할 추론 불가 |
-| Malicious Player | 암호문 위조/변조 불가 |
-
-### 주의 사항
-
-- 게임 진행 패턴 분석으로 역할 추론 가능 (메타 정보)
-- n-of-n 스킴이므로 한 명이라도 불참하면 복호화 불가
-
-## 역할 인코딩
-
-```python
-ROLE_ENCODING = {
-    "citizen": 0,
-    "mafia": 1,
-    "doctor": 2,
-    "police": 3
-}
-
-# 원-핫 벡터로 표현
-# citizen = [1, 0, 0, 0]
-# mafia   = [0, 1, 0, 0]
-# doctor  = [0, 0, 1, 0]
-# police  = [0, 0, 0, 1]
-```
-
-## 게임 설정
-
-`human/config.py` 수정:
-
-```python
-GAME_CONFIG = {
-    "min_players": 4,
-    "max_players": 10,
-    "role_distribution": {
-        4: {"mafia": 1, "doctor": 1, "police": 1, "citizen": 1},
-        5: {"mafia": 1, "doctor": 1, "police": 1, "citizen": 2},
-        # ...
-    },
-    "night_phase_timeout": 60,
-    "vote_phase_timeout": 60,
-}
-```
-
-## 트러블슈팅
-
-### OpenFHE 설치 실패
-
-```bash
-# Ubuntu 22.04/24.04에서 pip로 설치
-pip install openfhe
-
-# 설치 확인
-python -c "import openfhe; print(openfhe.__version__)"
-```
-
-### Agent 연결 타임아웃
-
-- `config.py`의 `connection_timeout` 증가
-- 로컬호스트 방화벽 설정 확인
-
-### OpenAI Rate Limit
-
-- Agent 수 감소
-- `player.py`에서 API 호출 간 딜레이 추가
+# maFHEa: Threshold FHE를 이용한 보안 마피아 게임
+
+이 프로젝트는 **Threshold Fully Homomorphic Encryption (FHE)** 기술을 사용하여 구현된 안전한 멀티 에이전트 마피아 게임입니다. 사용자는 텍스트 기반 인터페이스(TUI)를 통해 게임 호스트 역할을 수행하며, 나머지 플레이어들은 OpenAI 기반의 AI 에이전트입니다.
+
+## 게임 소개: maFHEa
+
+`maFHEa`는 고전적인 마피아 게임을 암호 기술로 구현한 것입니다. 게임이 시작되면 각 플레이어는 마피아, 의사, 경찰, 시민 등 비밀 역할을 부여받습니다.
+
+- **마피아**: 밤마다 한 명의 플레이어를 지목하여 제거하려고 시도합니다.
+- **의사**: 밤마다 한 명을 지목하여 마피아의 공격으로부터 보호할 수 있습니다.
+- **경찰**: 밤마다 한 명을 지목하여 그가 마피아인지 확인할 수 있습니다.
+- **시민**: 특별한 능력 없이 토론과 투표를 통해 마피아를 찾아내야 합니다.
+
+게임의 목표는 시민 팀은 모든 마피아를 투표로 제거하는 것이고, 마피아 팀은 시민 팀과 동등한 수를 만드는 것입니다.
+
+## 기술 구현: 어떻게 만들었는가?
+
+이 게임의 핵심은 **분산 키 생성(DKG)**과 **Threshold 복호화**를 통해 플레이어의 역할과 행동을 절대적으로 비밀에 부치는 것입니다.
+
+1.  **안전한 역할 분배**: 게임이 시작되면 모든 플레이어(호스트+AI 에이전트)가 협력하여 암호화에 사용할 공동 공개키를 생성합니다. 이때 각자는 비밀키의 일부 조각만 갖게 되므로, 그 누구도 전체 비밀키를 알지 못합니다. 호스트는 이 공개키로 역할을 암호화하여 각 플레이어에게 전달합니다.
+2.  **비밀 투표 및 행동**: 투표, 마피아의 공격, 의사의 치료 등 모든 행동은 암호화된 상태로 제출됩니다. 밤 단계가 끝나면 모든 플레이어가 다시 한번 협력하여 암호문을 부분적으로 복호화합니다. 이 조각들을 모아야만 최종 결과(예: 누가 죽었는지)를 알 수 있습니다.
+3.  **TUI 및 AI 에이전트**:
+    - **게임 호스트**: `human/app.py`에 구현된 **Textual** 기반의 TUI 애플리케이션입니다. 사용자는 이 인터페이스를 통해 게임을 시작하고, 각 단계의 진행 상황을 모니터링하며, AI들의 대화를 실시간으로 볼 수 있습니다.
+    - **AI 플레이어**: `agent/player.py`에 구현되어 있으며, OpenAI API를 사용하여 게임 상황을 분석하고, 다른 플레이어와 대화하며, 전략적인 결정을 내립니다.
+
+이 구조 덕분에, 서버 역할을 하는 호스트조차 각 AI 플레이어가 어떤 역할을 가졌는지, 투표 단계에서 누구에게 투표했는지 절대 알 수 없습니다. 오직 최종 결과만이 모두에게 공개됩니다.
+
+## 실행 방법
+
+이 프로젝트는 Docker를 사용하여 가장 쉽게 실행할 수 있습니다.
+
+1.  **OpenAI API 키 발급**: 게임의 AI 에이전트를 실행하려면 [OpenAI 웹사이트](https://platform.openai.com/api-keys)에서 API 키를 발급받아야 합니다.
+
+2.  **API 키 설정**: 발급받은 API 키를 `docker-compose.sh` 파일에 직접 입력합니다. 텍스트 에디터로 파일을 열고 `Your-OpenAI-API-Key-Here` 부분을 자신의 키로 교체하세요.
+
+    ```bash
+    #!/bin/bash
+    set -e
+
+    # 이 부분을 자신의 OpenAI API 키로 수정하세요.
+    export OPENAI_API_KEY="sk-..."
+
+    sudo -E docker compose run --rm mafhea
+    ```
+
+3.  **게임 실행**: 아래 명령어를 터미널에 입력하여 게임을 시작합니다.
+
+    ```bash
+    ./docker-compose.sh
+    ```
+
+    이 스크립트는 Docker 이미지를 빌드하고, AI 에이전트들을 실행한 뒤, 터미널에 게임 TUI를 실행시킵니다. 이제 TUI의 안내에 따라 게임을 시작할 수 있습니다.
 
 ## 라이선스
 
 MIT License
-
-## 참고 자료
-
-- [OpenFHE Documentation](https://openfhe-development.readthedocs.io/)
-- [Threshold FHE Tutorial](https://openfhe-development.readthedocs.io/en/latest/sphinx_rsts/intro/tutorials/threshold.html)
-- [BFV Scheme Paper](https://eprint.iacr.org/2012/144.pdf)
-- [Mafia Game](https://en.wikipedia.org/wiki/Mafia_(party_game))
-
----
-
-**보안 공지**: 이 구현은 교육 목적입니다. 프로덕션 사용 시 추가 필요:
-- 정식 보안 감사
-- 네트워크 계층 암호화 (TLS)
-- 인증 및 권한 관리
-- Byzantine fault tolerance
-- 검증 가능한 연산 증명
