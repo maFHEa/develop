@@ -1,12 +1,44 @@
 #!/bin/bash
 
-# Secure P2P Mafia Game - Full Launcher
-# This script starts 4 lobbies + the game host
+# Secure P2P Mafia Game - Full Setup & Launcher
+# This script sets up venv, installs dependencies, and starts the game
+
+set -e  # Exit on error
 
 echo "================================================"
 echo "  Secure P2P Mafia Game"
-echo "  Full Game Launcher"
+echo "  Full Setup & Launcher"
 echo "================================================"
+echo ""
+
+# Check directories
+if [ ! -d "agent" ] || [ ! -d "human" ]; then
+    echo "Error: Please run this script from the project root directory"
+    echo "Expected directories: agent/, human/"
+    exit 1
+fi
+
+# Step 1: Create virtual environment if not exists
+if [ ! -d "venv" ]; then
+    echo "[1/5] Creating virtual environment..."
+    python3 -m venv venv
+    echo "✓ Virtual environment created"
+else
+    echo "[1/5] Virtual environment already exists"
+fi
+echo ""
+
+# Step 2: Activate virtual environment
+echo "[2/5] Activating virtual environment..."
+source venv/bin/activate
+echo "✓ Virtual environment activated"
+echo ""
+
+# Step 3: Install/Update dependencies
+echo "[3/5] Installing dependencies..."
+pip install -q --upgrade pip
+pip install -q -r requirements.txt
+echo "✓ All dependencies installed"
 echo ""
 
 # Store PIDs for cleanup
@@ -28,39 +60,36 @@ cleanup() {
 # Set trap for cleanup
 trap cleanup SIGINT SIGTERM
 
-# Check directories
-if [ ! -d "agent" ] || [ ! -d "human" ]; then
-    echo "Error: Please run this script from the project root directory"
-    echo "Expected directories: agent/, human/"
-    exit 1
-fi
+# Step 4: Create logs directory
+mkdir -p logs
 
-# Start 4 lobby servers
-echo "Starting 4 Agent Lobbies..."
+# Start 5 lobby servers
+echo "[4/5] Starting 5 Agent Lobbies..."
 echo ""
 
-for i in 0 1 2 3; do
+for i in 0 1 2 3 4; do
     PORT=$((8000 + i))
-    echo "Starting Lobby $i on port $PORT..."
+    echo "  → Starting Lobby $i on port $PORT..."
 
     cd agent
-    source venv/bin/activate 2>/dev/null || true
-    python lobby.py --port $PORT > /dev/null 2>&1 &
+    python lobby.py --port $PORT > ../logs/lobby_$PORT.log 2>&1 &
     LOBBY_PIDS+=($!)
     cd ..
 
     sleep 0.5
 done
 
+echo "✓ All lobbies started"
 echo ""
-echo "Waiting for lobbies to initialize..."
+
+echo "[5/5] Waiting for lobbies to initialize..."
 sleep 2
 
 # Check if lobbies are running
 echo ""
 echo "Checking lobby status..."
 ALL_OK=true
-for i in 0 1 2 3; do
+for i in 0 1 2 3 4; do
     PORT=$((8000 + i))
     if curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
         echo "  [OK] Lobby $i (port $PORT)"
@@ -82,14 +111,23 @@ fi
 
 echo ""
 echo "================================================"
+echo "  All systems ready!"
 echo "  Starting Game Host..."
 echo "  Press Ctrl+C to stop all processes"
 echo "================================================"
 echo ""
+echo "Lobby servers available at:"
+echo "  - http://localhost:8000"
+echo "  - http://localhost:8001"
+echo "  - http://localhost:8002"
+echo "  - http://localhost:8003"
+echo "  - http://localhost:8004"
+echo ""
+echo "Logs saved in: logs/lobby_*.log"
+echo ""
 
 # Start game host (foreground)
 cd human
-source venv/bin/activate 2>/dev/null || true
 python app.py
 
 # Cleanup when game exits

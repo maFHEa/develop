@@ -80,7 +80,7 @@ async def spawn_agent(request: SpawnRequest):
 
         process = subprocess.Popen(
             [
-                "./venv/bin/python", "-u",
+                "../venv/bin/python", "-u",
                 "player.py",
                 "--port", str(port),
                 "--api-key", request.openai_api_key,

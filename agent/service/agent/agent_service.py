@@ -80,10 +80,6 @@ async def _execute_police_investigation(state, target_index: int) -> str:
     final_result = fusion_decrypt(state.cc, all_partials)
     decrypted_vector = final_result.GetPackedValue()
     
-    # DEBUG: Log the decrypted vector
-    logger.info(f"🔍 DEBUG - Decrypted vector (first 4): {decrypted_vector[:4]}")
-    logger.info(f"🔍 DEBUG - Sum: {sum(decrypted_vector[:NUM_ROLE_TYPES])}")
-    
     is_mafia = sum(decrypted_vector[:NUM_ROLE_TYPES]) >= 1
     
     # Record the result
