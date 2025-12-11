@@ -1,7 +1,0 @@
-fastapi
-uvicorn
-tenseal==0.3.14
-openai-agents==0.6.1
-pydantic==2.12.3
-httpx
-numpy>=1.21.0

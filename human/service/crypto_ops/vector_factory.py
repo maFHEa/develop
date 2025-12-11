@@ -1,0 +1,96 @@
+"""
+Vector Factory - Creates encrypted vectors for game actions
+"""
+import sys
+import os
+from typing import Tuple
+
+# Add agent directory to path for security imports
+agent_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'agent')
+if os.path.abspath(agent_path) not in sys.path:
+    sys.path.append(os.path.abspath(agent_path))
+
+from service.crypto.vector_operations import create_zero_vector, create_one_hot_vector
+from service.crypto.serialization import serialize_ciphertext
+
+
+class VectorFactory:
+    """Creates and serializes encrypted vectors"""
+    
+    def __init__(self, cc, joint_public_key, num_players: int):
+        self.cc = cc
+        self.joint_public_key = joint_public_key
+        self.num_players = num_players
+        self.all_encrypted_roles = []  # Will be updated later
+    
+    def create_zero_vector_str(self) -> str:
+        """Create serialized zero vector"""
+        zero_vec = create_zero_vector(
+            self.num_players, self.cc, self.joint_public_key
+        )
+        return serialize_ciphertext(self.cc, zero_vec)
+    
+    def create_one_hot_vector_str(self, target_index: int) -> str:
+        """Create serialized one-hot vector"""
+        one_hot = create_one_hot_vector(
+            self.num_players, target_index, self.cc, self.joint_public_key
+        )
+        return serialize_ciphertext(self.cc, one_hot)
+    
+    def create_human_action_vectors(
+        self,
+        target: int,
+        role: str,
+        phase: str
+    ) -> Tuple[str, str, str]:
+        """
+        Create 3 encrypted vectors for human player action (vote, attack, heal).
+        
+        BLIND PROTOCOL: Only role-appropriate vector contains real data.
+        Note: Police investigation is handled separately via parallel threshold decryption.
+        
+        Returns:
+            (vote_vector, attack_vector, heal_vector)
+        """
+        # Determine action type
+        action_type = self._get_action_type(role, phase)
+        
+        # Generate real vector
+        if target == -1 or action_type is None:
+            real_str = self.create_zero_vector_str()
+        else:
+            real_str = self.create_one_hot_vector_str(target)
+        
+        # Create dummy vector
+        dummy_str = self.create_zero_vector_str()
+        
+        # Assign based on role and phase
+        if phase == "vote":
+            # Vote phase: use vote vector slot
+            return real_str, dummy_str, dummy_str
+        elif phase == "night":
+            if action_type == "attack":
+                # Mafia: use attack slot
+                return dummy_str, real_str, dummy_str
+            elif action_type == "heal":
+                # Doctor: use heal slot
+                return dummy_str, dummy_str, real_str
+            else:
+                # Police/Citizen: all zeros (police uses separate investigation)
+                return dummy_str, dummy_str, dummy_str
+        else:
+            # Unknown phase
+            return dummy_str, dummy_str, dummy_str
+    
+    def _get_action_type(self, role: str, phase: str) -> str:
+        """Determine action type based on role and phase"""
+        if phase == "night":
+            if role == "mafia":
+                return "attack"
+            elif role == "doctor":
+                return "heal"
+            elif role == "police":
+                return "investigate"
+        elif phase == "vote":
+            return "attack"  # Use attack vector slot for voting
+        return None

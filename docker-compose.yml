@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  mafhea:
+    build: .
+    container_name: mafhea
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PYTHONUNBUFFERED=1
+      - TERM=xterm-256color
+    volumes:
+      - ./logs:/app/logs
+      - ./agent/logs:/app/agent/logs
+      - ./human/logs:/app/human/logs
+    stdin_open: true
+    tty: true
+    command: bash -c "chmod +x run_game.sh && ./run_game.sh"

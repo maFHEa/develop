@@ -17,13 +17,15 @@ class SuspicionLevel(Enum):
 
 class PoliceSuspicionLevel(Enum):
     """Extended suspicion levels for Police (includes investigation results)"""
-    CONFIRMED_MAFIA = "confirmed_mafia"      # 확정 마피아 (경찰 조사 결과)
-    CONFIRMED_CITIZEN = "confirmed_citizen"  # 확정 시민 (경찰 조사 결과)
-    HIGH_SUSPICION = "high"                  # 높은 의심
-    MEDIUM_SUSPICION = "medium"              # 중간 의심
-    LOW_SUSPICION = "low"                    # 낮은 의심
-    NEUTRAL = "neutral"                      # 중립 (의심 없음)
-    UNKNOWN = "unknown"                      # 아직 판단 안 함
+    CONFIRMED_MAFIA = "confirmed_mafia"          # 확정 마피아 (경찰 조사 결과, 수정 불가)
+    CONFIRMED_NOT_MAFIA = "confirmed_not_mafia"  # 확정 마피아 아님 (경찰 조사 결과, 추가 추론 가능)
+    SUSPECTED_DOCTOR = "suspected_doctor"        # 의사로 추정
+    SUSPECTED_CITIZEN = "suspected_citizen"      # 시민으로 추정
+    HIGH_SUSPICION = "high"                      # 높은 의심
+    MEDIUM_SUSPICION = "medium"                  # 중간 의심
+    LOW_SUSPICION = "low"                        # 낮은 의심
+    NEUTRAL = "neutral"                          # 중립 (의심 없음)
+    UNKNOWN = "unknown"                          # 아직 판단 안 함
 
 
 class SuspicionNote:
@@ -183,18 +185,21 @@ class PoliceNoteManager(SuspicionNoteManager):
         if target_index < 0 or target_index >= self.num_players:
             return f"Invalid player index: {target_index}"
         
-        level = PoliceSuspicionLevel.CONFIRMED_MAFIA if is_mafia else PoliceSuspicionLevel.CONFIRMED_CITIZEN
-        reasoning = f"[INVESTIGATION TURN {current_turn}] Police investigation confirmed: {'MAFIA' if is_mafia else 'CITIZEN'}"
+        level = PoliceSuspicionLevel.CONFIRMED_MAFIA if is_mafia else PoliceSuspicionLevel.CONFIRMED_NOT_MAFIA
+        reasoning = f"[INVESTIGATION TURN {current_turn}] Police investigation: {'MAFIA' if is_mafia else 'NOT MAFIA (Citizen/Doctor/Police)'}"
         
         self.notes[target_index] = SuspicionNote(
             player_index=target_index,
             level=level,
             reasoning=reasoning,
-            is_confirmed=True,  # 확정 결과 - 수정 불가
+            is_confirmed=is_mafia,  # 마피아만 수정 불가, 마피아 아닌 경우 추가 추론 가능
             turn=current_turn
         )
         
-        return f"Investigation result recorded: Player {target_index} is {'MAFIA' if is_mafia else 'CITIZEN'}"
+        if is_mafia:
+            return f"Investigation result recorded: Player {target_index} is MAFIA (cannot be updated)"
+        else:
+            return f"Investigation result recorded: Player {target_index} is NOT MAFIA (you can update to suspected_doctor or suspected_citizen)"
     
     def get_confirmed_mafia(self) -> List[int]:
         """Get list of confirmed mafia members"""
@@ -204,10 +209,26 @@ class PoliceNoteManager(SuspicionNoteManager):
             if note.level == PoliceSuspicionLevel.CONFIRMED_MAFIA and not note.is_dead
         ]
     
-    def get_confirmed_citizens(self) -> List[int]:
-        """Get list of confirmed citizens"""
+    def get_confirmed_not_mafia(self) -> List[int]:
+        """Get list of confirmed non-mafia players"""
         return [
             note.player_index
             for note in self.notes.values()
-            if note.level == PoliceSuspicionLevel.CONFIRMED_CITIZEN and not note.is_dead
+            if note.level == PoliceSuspicionLevel.CONFIRMED_NOT_MAFIA and not note.is_dead
+        ]
+    
+    def get_suspected_doctors(self) -> List[int]:
+        """Get list of players suspected to be doctors"""
+        return [
+            note.player_index
+            for note in self.notes.values()
+            if note.level == PoliceSuspicionLevel.SUSPECTED_DOCTOR and not note.is_dead
+        ]
+    
+    def get_suspected_citizens(self) -> List[int]:
+        """Get list of players suspected to be citizens"""
+        return [
+            note.player_index
+            for note in self.notes.values()
+            if note.level == PoliceSuspicionLevel.SUSPECTED_CITIZEN and not note.is_dead
         ]

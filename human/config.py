@@ -16,7 +16,7 @@ def _load_openai_api_key() -> str:
         if value:
             return value.strip()
 
-    env_path = Path(__file__).resolve().parents[0] / ".env"
+    env_path = Path(__file__).resolve().parent / ".env"
     if env_path.exists():
         try:
             with env_path.open("r", encoding="utf-8") as env_file:
@@ -52,7 +52,7 @@ GAME_CONFIG: Dict[str, Any] = {
     "role_distribution": {
         4: {"mafia": 1, "doctor": 1, "police": 1, "citizen": 1},
         5: {"mafia": 1, "doctor": 1, "police": 1, "citizen": 2},
-        6: {"mafia": 2, "doctor": 1, "police": 1, "citizen": 2},
+        6: {"mafia": 1, "doctor": 1, "police": 1, "citizen": 3},
         7: {"mafia": 2, "doctor": 1, "police": 1, "citizen": 3},
         8: {"mafia": 2, "doctor": 1, "police": 1, "citizen": 4},
         9: {"mafia": 3, "doctor": 1, "police": 1, "citizen": 4},
@@ -75,7 +75,8 @@ NETWORK_CONFIG: Dict[str, Any] = {
         "http://localhost:8000",
         "http://localhost:8001",
         "http://localhost:8002",
-        "http://localhost:8003"
+        "http://localhost:8003",
+        "http://localhost:8004"
     ],
     
     # OpenAI API Key (모든 Agent가 사용)

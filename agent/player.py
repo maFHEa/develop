@@ -4,44 +4,59 @@ Uses OpenAI Agents SDK for stateful autonomous behavior with session-based memor
 Supports DKG (Distributed Key Generation) for threshold FHE
 """
 import argparse
-import json
+import asyncio
 import os
 import sys
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException
 import uvicorn
+from openai import AsyncOpenAI
 
-from agents import Agent, Runner, ToolCallItem, ToolCallOutputItem, MessageOutputItem, ItemHelpers, SQLiteSession
+from agents import Agent, OpenAIConversationsSession
 
-from chat import GameChatHistory, ChatMessage
-from suspicion import SuspicionNoteManager, PoliceNoteManager
-from agent_logic import create_mafia_agent, create_action_prompt
+from model.chat import GameChatHistory
+from suspicion import SuspicionNoteManager
+from agent_logic import create_mafia_agent
+from game_memory import GameMemorySession
+from action_handlers import (
+    handle_vote_phase,
+    handle_night_phase,
+    handle_chat_phase,
+    generate_night_work_vectors
+)
 
-from models import (
+from model import (
     InitRequest,
     GameUpdateRequest,
     ActionResponse,
-    ChatBroadcast,
     DKGSetupRequest,
     DKGSetupResponse,
     DKGRoundRequest,
     DKGRoundResponse,
     PartialDecryptRequest,
-    PartialDecryptResponse,
-    RoleAssignmentRequest
+    PartialDecryptResponse
 )
-from security import (
-    create_openfhe_context,
+
+from service.crypto.key_generation import (
+    dkg_keygen_lead,
+    dkg_keygen_join
+)
+
+from service.crypto.serialization import (
+    serialize_ciphertext,
+    deserialize_ciphertext,
     deserialize_crypto_context,
     serialize_public_key,
     deserialize_public_key,
-    serialize_ciphertext,
-    deserialize_ciphertext,
-    dkg_keygen_lead,
-    dkg_keygen_join,
+)
+
+from service.crypto.threshold_decryption import (
     partial_decrypt_lead,
-    partial_decrypt_main,
+    partial_decrypt_main
+)
+
+from service.crypto.vector_operations import (
     create_one_hot_vector,
     create_zero_vector
 )
@@ -65,20 +80,56 @@ class AgentState:
         self.role: Optional[str] = None
         self.player_index: Optional[int] = None
         self.num_players: int = 0
+        self.player_addresses: List[str] = []  # All player HTTP addresses
         self.agent: Optional[Agent] = None
         self.alive: bool = True
         self.current_phase: str = "setup"
         self.current_turn: int = 0
         self.chat_history: GameChatHistory = GameChatHistory()
         self.suspicion_notes: Optional[SuspicionNoteManager] = None
-        self.session: Optional[SQLiteSession] = None
+        self.session: Optional[OpenAIConversationsSession] = None  # OpenAI Conversations API
+        self.game_memory: Optional[GameMemorySession] = None  # SQLite for game events
         self.last_read_msg_id: int = -1
         self.pending_action_target: Optional[int] = None
         self.action_submitted: bool = False
         self.pending_chat_messages: List[str] = []
+        self.last_message_time: Optional[float] = None  # For chat message rate limiting
+        self.my_encrypted_role: Optional[str] = None  # For blind role protocol
+        self.encrypted_role_vector: Optional[str] = None  # For police investigation
+        self.all_encrypted_roles: List[str] = []  # All players' encrypted roles
+        self.last_investigation_result: Optional[Dict[str, Any]] = None  # Police investigation result
+        self.personality: Optional[Dict[str, Any]] = None  # Agent personality traits
+        self.chat_task: Optional[asyncio.Task] = None  # Background chat task
 
 state = AgentState()
 app = FastAPI(title="Mafia AI Agent")
+
+# OpenAI client for conversation management (lazy initialization)
+openai_client: Optional[AsyncOpenAI] = None
+
+
+def get_openai_client() -> AsyncOpenAI:
+    """OpenAI client를 lazy하게 초기화 (OPENAI_API_KEY가 설정된 후)"""
+    global openai_client
+    if openai_client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is not set")
+        openai_client = AsyncOpenAI(api_key=api_key)
+    return openai_client
+
+
+async def create_conversation(metadata: dict) -> str:
+    """OpenAI Conversations API를 사용하여 conversation 생성"""
+    try:
+        client = get_openai_client()
+        conversation = await client.conversations.create(
+            metadata=metadata
+        )
+        return conversation.id
+    except Exception as e:
+        logger.error(f"❌ Failed to create conversation: {e}")
+        raise
 
 
 # ============================================================================
@@ -98,11 +149,7 @@ async def dkg_setup(request: DKGSetupRequest):
         # Deserialize crypto context
         state.cc = deserialize_crypto_context(request.crypto_context)
 
-        logger.info("━" * 60)
-        logger.info(f"🔐 DKG SETUP | Player #{state.player_index}")
-        logger.info(f"   Game ID: {state.game_id}")
-        logger.info(f"   Players: {state.num_players}")
-        logger.info("━" * 60)
+        logger.info(f"🎮 Game ID: {state.game_id}")
 
         return DKGSetupResponse(
             success=True,
@@ -128,12 +175,10 @@ async def dkg_round(request: DKGRoundRequest):
         if request.round_number == 1 and request.previous_public_key is None:
             # Lead party - generate initial keypair
             state.keypair = dkg_keygen_lead(state.cc)
-            logger.info(f"🔑 DKG Round 1: Lead party key generated")
         else:
             # Joining party - use previous public key
             prev_pk = deserialize_public_key(state.cc, request.previous_public_key)
             state.keypair = dkg_keygen_join(state.cc, prev_pk)
-            logger.info(f"🔑 DKG Round {request.round_number}: Joined with previous public key")
 
         # Serialize our public key for the next party
         pk_b64 = serialize_public_key(state.cc, state.keypair.publicKey)
@@ -147,13 +192,115 @@ async def dkg_round(request: DKGRoundRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/generate_keyswitchgen")
+async def generate_keyswitchgen(request: dict):
+    """
+    Round 2 of threshold multiplication key generation.
+    Generate MultiKeySwitchGen with local secret key.
+    """
+    try:
+        if state.cc is None or state.keypair is None:
+            raise ValueError("Keys not initialized. Complete DKG first.")
+        
+        game_id = request.get("game_id")
+        if game_id != state.game_id:
+            raise ValueError(f"Game ID mismatch: expected {state.game_id}, got {game_id}")
+        
+        from service.crypto.serialization import deserialize_eval_mult_key_object, serialize_eval_mult_key
+        # Deserialize previous key (from human)
+        prev_key_b64 = request.get("prev_key")
+        prev_key = deserialize_eval_mult_key_object(state.cc, prev_key_b64)
+        
+        # Generate local KeySwitch key
+        local_key = state.cc.MultiKeySwitchGen(
+            state.keypair.secretKey,
+            state.keypair.secretKey,
+            prev_key
+        )
+        
+        # Serialize and return
+        local_key_b64 = serialize_eval_mult_key(state.cc, local_key)
+        
+        return {
+            "eval_key": local_key_b64,
+            "success": True
+        }
+    except Exception as e:
+        logger.error(f"❌ Round 2 KeySwitchGen error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate_multmultkey")
+async def generate_multmultkey(request: dict):
+    """
+    Round 3 of threshold multiplication key generation.
+    Transform combined key with local secret key using MultiMultEvalKey.
+    """
+    try:
+        if state.cc is None or state.keypair is None:
+            raise ValueError("Keys not initialized. Complete DKG first.")
+        
+        game_id = request.get("game_id")
+        if game_id != state.game_id:
+            raise ValueError(f"Game ID mismatch: expected {state.game_id}, got {game_id}")
+        
+        from service.crypto.serialization import deserialize_eval_mult_key_object, serialize_eval_mult_key
+        
+        # Deserialize combined key
+        combined_key_b64 = request.get("combined_key")
+        combined_key = deserialize_eval_mult_key_object(state.cc, combined_key_b64)
+        key_tag = request.get("key_tag")
+        
+        # Transform with local secret key
+        mult_key = state.cc.MultiMultEvalKey(
+            state.keypair.secretKey,
+            combined_key,
+            key_tag
+        )
+        
+        # Serialize and return
+        mult_key_b64 = serialize_eval_mult_key(state.cc, mult_key)
+        
+        return {
+            "mult_key": mult_key_b64,
+            "success": True
+        }
+    except Exception as e:
+        logger.error(f"❌ Round 3 MultiMultEvalKey error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/install_final_mult_key")
+async def install_final_mult_key(request: dict):
+    """
+    Install the final combined multiplication key into the context.
+    This should be called after all mult keys are generated and combined by the host.
+    """
+    try:
+        if state.cc is None or state.keypair is None:
+            raise ValueError("Keys not initialized. Complete DKG first.")
+        
+        from service.crypto.serialization import deserialize_eval_mult_key_object
+        
+        # Deserialize final mult key
+        final_mult_key_b64 = request.get("final_mult_key")
+        final_mult_key = deserialize_eval_mult_key_object(state.cc, final_mult_key_b64)
+        
+        # Install into context
+        state.cc.InsertEvalMultKey([final_mult_key])
+        logger.info(f"✓ Final multiplication key installed into context")
+        
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"❌ Install final mult key error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/partial_decrypt", response_model=PartialDecryptResponse)
 async def partial_decrypt(request: PartialDecryptRequest):
     """
     Perform partial decryption with local secret key.
-
-    This is the key security feature: Each party contributes a partial
-    decryption, but no single party can decrypt alone.
+    Each party contributes a partial decryption.
     """
     try:
         if state.cc is None or state.keypair is None:
@@ -165,10 +312,8 @@ async def partial_decrypt(request: PartialDecryptRequest):
         # Perform partial decryption
         if request.is_lead:
             partial = partial_decrypt_lead(state.cc, ciphertext, state.keypair.secretKey)
-            logger.info(f"🔓 Partial decryption (Lead)")
         else:
             partial = partial_decrypt_main(state.cc, ciphertext, state.keypair.secretKey)
-            logger.info(f"🔓 Partial decryption (Main)")
 
         # Serialize partial result
         partial_b64 = serialize_ciphertext(state.cc, partial)
@@ -182,23 +327,233 @@ async def partial_decrypt(request: PartialDecryptRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/role_assignment")
-async def role_assignment(request: RoleAssignmentRequest):
+@app.post("/investigate_parallel")
+async def investigate_parallel(request: dict):
+    """병렬 조사: 암호문을 받아서 partial decrypt만 수행"""
+    try:
+        if state.cc is None or state.keypair is None:
+            raise ValueError("Keys not initialized")
+        
+        ciphertext_b64 = request["ciphertext"]
+        ciphertext = deserialize_ciphertext(state.cc, ciphertext_b64)
+        
+        # Partial decrypt
+        partial = partial_decrypt_main(state.cc, ciphertext, state.keypair.secretKey)
+        partial_b64 = serialize_ciphertext(state.cc, partial)
+        
+        return {"partial_result": partial_b64}
+        
+    except Exception as e:
+        logger.error(f"❌ Parallel investigation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/store_investigation_result")
+async def store_investigation_result(request: dict):
+    """서버로부터 조사 결과를 받아서 저장"""
+    if state.role != "police":
+        raise HTTPException(status_code=403, detail="Only police can receive investigation results")
+    
+    target = request["target"]
+    is_mafia = request["is_mafia"]
+    
+    state.last_investigation_result = {
+        "target": target,
+        "is_mafia": is_mafia
+    }
+    
+    # GameMemorySession에 기록
+    if state.game_memory:
+        state.game_memory.record_investigation(
+            turn=state.current_turn,
+            target_index=target,
+            is_mafia=is_mafia,
+            reasoning=f"Threshold decryption investigation result"
+        )
+    
+    # Log the result
+    logger.info("=" * 60)
+    logger.info("🔍 POLICE INVESTIGATION RESULT")
+    logger.info(f"   Player {target} is: {'🎭 MAFIA' if is_mafia else '✅ NOT MAFIA'}")
+    logger.info("=" * 60)
+    
+    return {"success": True}
+
+
+@app.get("/investigation_result")
+async def get_investigation_result():
+    """경찰이 자신의 조사 결과를 조회 (tool에서 사용)"""
+    if state.role != "police":
+        raise HTTPException(status_code=403, detail="Only police can check investigation results")
+    
+    if state.last_investigation_result is None:
+        return {"has_result": False}
+    
+    return {
+        "has_result": True,
+        "result": state.last_investigation_result
+    }
+
+@app.post("/shuffle_encrypted_roles")
+async def shuffle_encrypted_roles(request: dict):
     """
-    Receive role assignment after threshold decryption.
+    Distributed shuffle protocol: Receive encrypted roles from host, shuffle AND re-randomize, return to host.
+    Host will call each agent sequentially.
     """
     try:
-        state.role = request.role.lower()
-        state.joint_public_key = deserialize_public_key(state.cc, request.joint_public_key)
-
-        logger.info("━" * 60)
-        logger.info(f"🎭 ROLE ASSIGNED | Player #{state.player_index}")
-        logger.info(f"   Role: {state.role.upper()}")
-        logger.info("━" * 60)
-
-        return {"success": True, "message": f"Role {state.role} assigned"}
+        encrypted_roles = request["encrypted_roles"]
+        joint_public_key_b64 = request["joint_public_key"]
+        
+        # Deserialize joint public key
+        joint_pk = deserialize_public_key(state.cc, joint_public_key_b64)
+        
+        # Shuffle the encrypted roles list
+        import random
+        shuffled_roles = encrypted_roles.copy()
+        random.shuffle(shuffled_roles)
+        
+        # Re-randomize each ciphertext: ct' = ct + Enc(0)
+        from service.crypto.roles import NUM_ROLE_TYPES
+        rerandomized_roles = []
+        for role_ct_b64 in shuffled_roles:
+            # Deserialize ciphertext
+            role_ct = deserialize_ciphertext(state.cc, role_ct_b64)
+            
+            # Create zero vector and encrypt it
+            zero_pt = state.cc.MakePackedPlaintext([0] * NUM_ROLE_TYPES)
+            enc_zero = state.cc.Encrypt(joint_pk, zero_pt)
+            
+            # Add Enc(0) to re-randomize
+            rerandomized_ct = state.cc.EvalAdd(role_ct, enc_zero)
+            
+            # Serialize back
+            rerandomized_roles.append(serialize_ciphertext(state.cc, rerandomized_ct))
+        
+        logger.info(f"🔀 Player {state.player_index} shuffled and re-randomized {len(rerandomized_roles)} encrypted roles")
+        
+        # Return shuffled+rerandomized roles back to host
+        return {"encrypted_roles": rerandomized_roles}
+        
     except Exception as e:
-        logger.error(f"❌ Role assignment error: {e}", exc_info=True)
+        logger.error(f"❌ Shuffle error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/blind_role_assignment")
+async def blind_role_assignment(request: dict):
+    """
+    BLIND role assignment: Agent decrypts only their own role.
+    
+    Protocol:
+    1. Receive encrypted_roles[my_index] - my encrypted role
+    2. Request partial decryptions from ALL other players
+    3. Add my own partial decryption last
+    4. Fusion decrypt to get my role
+    
+    Result: I only know MY role, no one else's
+    """
+    try:
+        my_index = request["my_index"]
+        encrypted_roles = request["encrypted_roles"]
+        state.joint_public_key = deserialize_public_key(state.cc, request["joint_public_key"])
+        
+        # Store all encrypted roles for future use (e.g., police investigation)
+        state.all_encrypted_roles = encrypted_roles
+        
+        # Store player addresses for network communication
+        if "player_addresses" in request:
+            state.player_addresses = request["player_addresses"]
+        
+        # My encrypted role
+        my_role_enc = deserialize_ciphertext(state.cc, encrypted_roles[my_index])
+        
+        # Store encrypted role and wait for server to coordinate threshold decryption
+        state.my_encrypted_role = encrypted_roles[my_index]
+        
+        return {"success": True, "message": "Waiting for threshold decryption"}
+        
+    except Exception as e:
+        logger.error(f"❌ Blind role assignment error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/complete_role_decryption")
+async def complete_role_decryption(request: dict):
+    """
+    Complete role decryption with collected partial decryptions.
+    Server sends all partial decryptions except mine.
+    """
+    try:
+        partial_ciphertexts_b64 = request["partial_ciphertexts"]
+        
+        # Deserialize partials
+        partial_results = [
+            deserialize_ciphertext(state.cc, pt_b64) 
+            for pt_b64 in partial_ciphertexts_b64
+        ]
+        
+        # Add my partial decryption LAST
+        my_role_enc = deserialize_ciphertext(state.cc, state.my_encrypted_role)
+        my_partial = partial_decrypt_main(state.cc, my_role_enc, state.keypair.secretKey)
+        partial_results.append(my_partial)
+        
+        # Fusion decrypt
+        from service.crypto.threshold_decryption import fusion_decrypt
+        from service.crypto.roles import ROLE_ENCODING, one_hot_to_role, NUM_ROLE_TYPES
+        final_plaintext = fusion_decrypt(state.cc, partial_results)
+        decrypted_vector = final_plaintext.GetPackedValue()[:NUM_ROLE_TYPES]
+        my_role = one_hot_to_role(decrypted_vector)
+        
+        state.role = my_role.lower()
+        
+        # Store encrypted role for police investigation
+        state.encrypted_role_vector = state.my_encrypted_role
+        
+        # Initialize suspicion notes manager
+        from suspicion import SuspicionNoteManager, PoliceNoteManager
+        if state.role == "police":
+            state.suspicion_notes = PoliceNoteManager(state.num_players, state.player_index)
+        else:
+            state.suspicion_notes = SuspicionNoteManager(state.num_players, state.player_index)
+        
+        # Initialize both session systems:
+        # 1. SQLite for game events (deaths, investigations, actions)
+        # Session was already created in /init, so just record role assignment
+        if state.game_memory is None:
+            session_id = f"{state.game_id}_{state.player_index}"
+            state.game_memory = GameMemorySession(session_id, db_path="db/game_memory.db")
+            state.game_memory.clear_session()  # Clear old data for new game
+        
+        # Record role assignment event
+        state.game_memory.record_event(
+            turn=0,
+            phase="role_assignment",
+            event_type="role_assigned",
+            data={"role": state.role, "player_index": state.player_index},
+            description=f"Role assigned: {state.role.upper()}"
+        )
+        
+        # 2. OpenAI Conversations API for chat/dialogue management
+        conversation_id = await create_conversation(
+            metadata={
+                "game_id": state.game_id,
+                "agent_id": str(state.agent_id),
+                "player_index": str(state.player_index),
+                "role": state.role
+            }
+        )
+        state.session = OpenAIConversationsSession(conversation_id=conversation_id)
+        # NOTE: OpenAIConversationsSession automatically maintains conversation history
+        # No need to clear - each game gets a unique conversation_id
+        state.last_read_msg_id = -1
+        state.agent = create_mafia_agent(state, state.role, state.player_index, state.num_players, state.game_id or "")
+
+        logger.info(f"🎭 Role: {state.role.upper()}")
+        
+        return {"success": True, "role": state.role}
+        
+    except Exception as e:
+        logger.error(f"❌ Role decryption completion error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -208,32 +563,45 @@ async def role_assignment(request: RoleAssignmentRequest):
 
 @app.post("/init")
 async def initialize_agent(request: InitRequest):
-    """Initialize agent with game parameters and role (after DKG)."""
+    """Initialize agent with game parameters (before role assignment)."""
     try:
         state.game_id = request.game_id
         state.cc = deserialize_crypto_context(request.crypto_context)
         state.joint_public_key = deserialize_public_key(state.cc, request.joint_public_key)
-        state.role = request.role.lower()
         state.player_index = request.player_index
         state.num_players = request.num_players
         state.alive = True
-
-        # Initialize suspicion notes manager (Police gets special version)
-        if state.role == "police":
-            state.suspicion_notes = PoliceNoteManager(state.num_players, state.player_index)
-        else:
-            state.suspicion_notes = SuspicionNoteManager(state.num_players, state.player_index)
-
-        # SQLiteSession으로 게임별, 에이전트별 대화 히스토리 관리
-        session_id = f"game_{state.game_id}_agent_{state.agent_id}_player_{state.player_index}"
-        db_path = "conversations.db"
-        state.session = SQLiteSession(session_id, db_path)
-        await state.session.clear_session()
-        state.last_read_msg_id = -1
-        state.agent = create_mafia_agent(state, state.role, state.player_index, state.num_players)
+        # Role will be assigned later via blind threshold decryption
 
         logger.info("━" * 60)
-        logger.info(f"🎮 INITIALIZED | Player #{state.player_index} | Role: {state.role.upper()}")
+        logger.info(f"🎮 AGENT INITIALIZED | Player #{state.player_index}")
+        logger.info(f"   Game ID: {state.game_id}")
+        logger.info(f"   Players: {state.num_players}")
+        logger.info(f"   Waiting for blind role assignment...")
+        logger.info("━" * 60)
+
+        # Initialize SQLite game memory session early (before role assignment)
+        # Session ID: gameid_agentid
+        session_id = f"{state.game_id}_{state.agent_id}"
+        state.game_memory = GameMemorySession(session_id, db_path="db/game_memory.db")
+        state.game_memory.clear_session()  # Clear old data for new game
+        
+        state.game_memory.record_event(
+            turn=0,
+            phase="init",
+            event_type="game_init",
+            data={"num_players": state.num_players, "player_index": state.player_index},
+            description=f"Game initialized - Player {state.player_index} of {state.num_players}"
+        )
+
+        # OpenAI Conversations API는 역할 할당 후에 초기화됨
+        # (role 정보가 필요하므로)
+        state.last_read_msg_id = -1
+
+        logger.info("━" * 60)
+        logger.info(f"🎮 INITIALIZED | Player #{state.player_index} | Role: {state.role.upper() if state.role else 'PENDING'}")
+        if hasattr(state, 'personality'):
+            logger.info(f"   🎭 Personality: {state.personality.get('communication', 'unknown')}")
         logger.info("━" * 60)
 
         return {"success": True, "message": f"Agent initialized as {state.role}"}
@@ -244,110 +612,87 @@ async def initialize_agent(request: InitRequest):
 
 @app.post("/request_action", response_model=ActionResponse)
 async def request_action(request: GameUpdateRequest):
-    """Host requests an action from this agent."""
+    """
+    Host가 Agent에게 액션 요청
+    Phase별로 적절한 핸들러를 호출하여 암호화된 액션 벡터 반환
+    """
     try:
         logger.info("-"*50)
+
+        # Cancel any running chat task when moving to action phase
+        if hasattr(state, 'chat_task') and state.chat_task and not state.chat_task.done():
+            logger.warning("⚠️  Chat task still running when action requested - cancelling")
+            state.chat_task.cancel()
+            try:
+                await state.chat_task
+            except asyncio.CancelledError:
+                logger.info("✓ Chat task cancelled before action phase")
+        
+        # Reset state for new action
         state.action_submitted = False
         state.pending_action_target = None
         state.pending_chat_messages = []
         state.current_phase = request.phase
 
-        # Log phase start
-        survivors_str = ", ".join(str(s) for s in request.survivors)
-        logger.info("")
-        logger.info("━" * 60)
-        logger.info(f"📍 {request.phase.upper()} PHASE | Turn {state.current_turn}")
-        logger.info(f"👥 Alive: {survivors_str}")
-        logger.info(f"💬 Message: {request.message}")
-        logger.info("━" * 60)
+        # Update alive status based on survivors list
+        if state.player_index not in request.survivors:
+            state.alive = False
+            logger.info(f"💀 Player {state.player_index} is now marked as dead (not in survivors list)")
 
-        # Update dead players in suspicion notes
+        # Update suspicion notes with dead players
         if state.suspicion_notes:
             for i in range(state.num_players):
                 if i not in request.survivors and i != state.player_index:
                     state.suspicion_notes.mark_player_dead(i)
 
+        # Dead player: send zero action
         if not state.alive:
-            logger.info("💀 Agent is dead. Sending dummy action.")
+            logger.info("💀 Agent is dead. Sending zero action.")
             encrypted_vector = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
             ct_b64 = serialize_ciphertext(state.cc, encrypted_vector)
-            return ActionResponse(encrypted_action=ct_b64, phase=request.phase)
-
-        if request.phase in ["night", "vote"]:
-            if request.phase == "night":
-                state.current_turn += 1
-
-            prompt = create_action_prompt(
-                phase=request.phase,
-                turn=state.current_turn,
-                survivors_str=survivors_str,
-                role=state.role,
-                message=request.message
+            return ActionResponse(
+                vote_vector=ct_b64,
+                attack_vector=ct_b64,
+                heal_vector=ct_b64,
+                phase=request.phase
             )
 
-            logger.debug(f"AI Prompt:\n{prompt}")
-
-            logger.info("🤖 Calling AI agent...")
-            result = await Runner.run(
-                starting_agent=state.agent,
-                input=prompt,
-                session=state.session,
-                max_turns=5
+        # ========================================
+        # Phase별 핸들러 호출
+        # ========================================
+        
+        if request.phase == "vote":
+            vote_b64, attack_b64, heal_b64 = await handle_vote_phase(state, request)
+        
+        elif request.phase == "night":
+            target_index = await handle_night_phase(state, request)
+            # 여기서 None 또는 False 를 받는 경우 아무 것도 안함으로 간주
+            state.pending_action_target = target_index
+            
+            # Generate night work vectors
+            vote_b64, attack_b64, heal_b64 = generate_night_work_vectors(
+                state, request.phase, target_index
             )
-
-            # Log AI interaction
-            logger.info("")
-            logger.info("┌─ AI Decision ─────────────────────────────────────────────┐")
-
-            for item in result.new_items:
-                if isinstance(item, ToolCallItem):
-                    func_name = getattr(item.raw_item, 'name', 'unknown')
-                    func_args = getattr(item.raw_item, 'arguments', '{}')
-                    try:
-                        args_dict = json.loads(func_args)
-                        logger.info(f"│ 🔧 Function: {func_name}")
-                        logger.info(f"│    Args: {args_dict}")
-                    except:
-                        logger.info(f"│ 🔧 Function: {func_name}({func_args})")
-
-                elif isinstance(item, ToolCallOutputItem):
-                    logger.info(f"│ ✅ Result: {item.output}")
-
-                elif isinstance(item, MessageOutputItem):
-                    message_text = ItemHelpers.text_message_output(item)
-                    if message_text.strip():
-                        logger.info(f"│ 💭 Thought: {message_text[:100]}...")
-
-            logger.info("└───────────────────────────────────────────────────────────┘")
-            logger.debug(f"Full AI output: {result.final_output}")
-
-            if not state.action_submitted:
-                logger.warning("⚠️  AI did not submit an action, defaulting to abstain.")
-                state.pending_action_target = None
+        
+        elif request.phase in ["chat", "day"]:
+            # Chat phase는 백그라운드에서 실행하고 즉시 반환
+            vote_b64, attack_b64, heal_b64 = await handle_chat_phase(state, request)
+        
         else:
-            logger.info("ℹ️  No action required for this phase.")
-            state.pending_action_target = None
-
-        # Encrypt final action with joint public key
-        if state.pending_action_target is not None:
-            encrypted_vector = create_one_hot_vector(
-                state.num_players,
-                state.pending_action_target,
-                state.cc,
-                state.joint_public_key
-            )
-            logger.info(f"🔒 Encrypted action → Target Player {state.pending_action_target}")
-        else:
-            encrypted_vector = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
-            logger.info("🔒 Encrypted dummy action (abstain/no-op)")
-
-        ct_b64 = serialize_ciphertext(state.cc, encrypted_vector)
+            # Unknown phase - return zero vectors
+            logger.info(f"ℹ️  Unknown phase '{request.phase}', returning zero vectors")
+            zero_vec = create_zero_vector(state.num_players, state.cc, state.joint_public_key)
+            zero_vec_b64 = serialize_ciphertext(state.cc, zero_vec)
+            vote_b64 = attack_b64 = heal_b64 = zero_vec_b64
 
         return ActionResponse(
-            encrypted_action=ct_b64,
+            vote_vector=vote_b64,
+            attack_vector=attack_b64,
+            heal_vector=heal_b64,
             phase=request.phase,
             chat_messages=[]
         )
+    
     except Exception as e:
         logger.error(f"Error in /request_action: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -356,6 +701,119 @@ async def request_action(request: GameUpdateRequest):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.get("/chat/messages")
+async def get_chat_messages():
+    """Get pending chat messages from this agent"""
+    messages = state.pending_chat_messages.copy()
+    state.pending_chat_messages.clear()
+    return {"messages": messages}
+
+
+@app.post("/chat/phase")
+async def chat_phase_control(request: dict):
+    """Control chat phase - start or stop"""
+    action = request.get("action", "")
+
+    if action == "stop":
+        # Stop chat by changing phase
+        logger.info("💬 Chat phase stop requested - changing phase to 'vote'")
+        state.current_phase = "vote"  # This will cause the chat loop to exit
+        return {"status": "stopped"}
+
+    return {"status": "unknown_action"}
+
+
+@app.post("/death_announcement")
+async def receive_death_announcement(request: dict):
+    """사망자 역할 공개를 수신"""
+    deaths = request.get("deaths", [])
+
+    for death in deaths:
+        player_index = death.get("player_index")
+        role = death.get("role", "unknown")
+
+        # 의심 메모에 기록
+        if state.suspicion_notes:
+            state.suspicion_notes.mark_player_dead(player_index)
+            # 역할 정보 저장 (confirmed)
+            state.suspicion_notes.write_note(
+                target_index=player_index,
+                level="confirmed_dead",
+                reasoning=f"사망 확인 - 역할: {role.upper()}",
+                current_turn=state.current_turn
+            )
+        
+        # GameMemorySession에 기록
+        if state.game_memory:
+            state.game_memory.record_death(
+                turn=state.current_turn,
+                player_index=player_index,
+                cause="announced",
+                revealed_role=role
+            )
+
+        logger.info(f"💀 사망 공지: 플레이어 {player_index} - 역할: {role.upper()}")
+
+    return {"status": "ok"}
+
+
+@app.post("/chat")
+async def receive_chat_message(request: dict):
+    """Receive chat message from host"""
+    # Store received messages for agent's context
+    sender_index = request.get("sender_index")
+    message = request.get("message")
+    msg_id = request.get("message_id")
+    
+    # Add to chat history so agent can read it
+    state.chat_history.add_message(
+        player_index=sender_index,
+        phase="chat",  # Chat messages happen during day/chat phase
+        message=message,
+        turn=state.current_turn
+    )
+    
+    # Record in game memory
+    if state.game_memory:
+        state.game_memory.record_event(
+            turn=state.current_turn,
+            phase="chat",
+            event_type="chat_received",
+            data={"sender": sender_index, "message": message[:100]},  # Truncate long messages
+            description=f"Received chat from Player {sender_index}"
+        )
+    
+    return {"status": "ok"}
+
+
+@app.post("/get_encrypted_role_vector")
+async def get_encrypted_role_vector(request: dict):
+    """Return encrypted role vector for police investigation"""
+    try:
+        if state.encrypted_role_vector is None:
+            raise ValueError("Encrypted role vector not available")
+        
+        logger.info(f"🔍 Providing encrypted role vector for investigation")
+        
+        return {
+            "encrypted_role_vector": state.encrypted_role_vector,
+            "success": True
+        }
+    except Exception as e:
+        logger.error(f"❌ Get encrypted role vector error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/reveal_role")
+async def reveal_role():
+    """사망 시 역할 공개 - 게임 종료 후 또는 사망 시 호출"""
+    if state.role is None:
+        raise HTTPException(status_code=400, detail="Role not assigned yet")
+
+    logger.info(f"💀 Revealing role: {state.role.upper()}")
+    return {"role": state.role}
 
 
 # ============================================================================
