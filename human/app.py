@@ -5,7 +5,6 @@ from textual.app import App
 import asyncio
 import httpx
 import os
-import sys
 from typing import List
 
 # Import screens
@@ -16,8 +15,8 @@ from screens import (
 
 # Import game engine
 from main import GameEngine
-from network import spawn_agents_from_lobbies, check_agent_health, AgentCommunicator
-from config import GAME_CONFIG, NETWORK_CONFIG
+from network import spawn_agents_from_lobbies, AgentCommunicator
+from config import NETWORK_CONFIG
 
 
 class MafiaGameApp(App):

@@ -2,7 +2,6 @@
 HTTP Server for Human Player - Relay Decrypt Endpoint
 """
 from fastapi import FastAPI, HTTPException
-from typing import Optional
 import sys
 import os
 
@@ -12,7 +11,7 @@ if os.path.abspath(agent_path) not in sys.path:
     sys.path.append(os.path.abspath(agent_path))
 
 from service.crypto.serialization import serialize_ciphertext, deserialize_ciphertext
-from service.crypto.threshold_decryption import partial_decrypt_lead, fusion_decrypt
+from service.crypto.threshold_decryption import partial_decrypt_lead
 
 app = FastAPI()
 

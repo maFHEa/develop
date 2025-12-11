@@ -9,7 +9,7 @@ from typing import Optional, Tuple, List
 
 from agents import Runner, ToolCallItem, ToolCallOutputItem, MessageOutputItem, ItemHelpers
 from service.crypto.vector_operations import create_one_hot_vector, create_zero_vector
-from service.crypto.serialization import serialize_ciphertext, deserialize_ciphertext
+from service.crypto.serialization import serialize_ciphertext
 from agent_logic import create_agent_tools, create_action_prompt, create_chat_prompt
 
 logger = logging.getLogger(__name__)

@@ -3,7 +3,6 @@ Decryption Service - Threshold decryption operations
 """
 import sys
 import os
-import asyncio
 from typing import List
 
 # Add agent directory to path

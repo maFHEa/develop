@@ -5,49 +5,38 @@ Supports DKG (Distributed Key Generation) for threshold FHE
 """
 import argparse
 import asyncio
-import json
 import os
 import sys
 import logging
-import tempfile
-import base64
-import httpx
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException
 import uvicorn
-from openfhe import BINARY
 from openai import AsyncOpenAI
 
-from agents import Agent, Runner, ToolCallItem, ToolCallOutputItem, MessageOutputItem, ItemHelpers, OpenAIConversationsSession
+from agents import Agent, OpenAIConversationsSession
 
-from model.chat import GameChatHistory, ChatMessage
-from suspicion import SuspicionNoteManager, PoliceNoteManager
-from agent_logic import create_mafia_agent, create_action_prompt
+from model.chat import GameChatHistory
+from suspicion import SuspicionNoteManager
+from agent_logic import create_mafia_agent
 from game_memory import GameMemorySession
 from action_handlers import (
     handle_vote_phase,
     handle_night_phase,
     handle_chat_phase,
-    generate_night_work_vectors,
-    send_dummy_investigation_packets,
-    log_phase_start
+    generate_night_work_vectors
 )
 
 from model import (
     InitRequest,
     GameUpdateRequest,
     ActionResponse,
-    ChatBroadcast,
     DKGSetupRequest,
     DKGSetupResponse,
     DKGRoundRequest,
     DKGRoundResponse,
     PartialDecryptRequest,
-    PartialDecryptResponse,
-    RoleAssignmentRequest
+    PartialDecryptResponse
 )
-
-from service.crypto.context import create_openfhe_context
 
 from service.crypto.key_generation import (
     dkg_keygen_lead,

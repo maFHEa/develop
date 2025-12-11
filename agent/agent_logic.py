@@ -3,7 +3,6 @@ Mafia AI Agent Logic
 Agent creation, function tools, and prompts
 """
 import logging
-import os
 import random
 import hashlib
 from typing import Annotated, Optional, List, Dict
